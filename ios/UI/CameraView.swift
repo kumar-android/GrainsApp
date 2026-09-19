@@ -6,110 +6,145 @@ struct CameraView: View {
     @StateObject private var controller = CameraController()
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    CameraPreview(session: controller.captureSession)
-                        .frame(maxWidth: .infinity)
-                        .aspectRatio(3.0 / 4.0, contentMode: .fit)
-                        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-                        .overlay(alignment: .topLeading) {
-                            Label(controller.state.rawValue, systemImage: statusIcon)
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(statusColor)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 8)
-                                .background(.ultraThinMaterial, in: Capsule())
-                                .padding(14)
-                        }
+        ZStack {
+            Color.black.ignoresSafeArea()
+            CameraPreview(session: controller.captureSession)
+                .ignoresSafeArea()
 
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Natural RAW burst")
-                            .font(.title2.weight(.semibold))
-                        Text("Capture a short Bayer burst and render a memory-safe on-device preview. Use RAW export for the full-resolution burst and Windows reference processing.")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
+            LinearGradient(
+                colors: [.black.opacity(0.55), .clear, .black.opacity(0.78)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
+
+            VStack(spacing: 0) {
+                topBar
+                Spacer()
+                if !controller.lastError.isEmpty { errorBanner }
+                bottomBar
+            }
+            .padding(.horizontal, 18)
+            .padding(.top, 10)
+            .padding(.bottom, 12)
+        }
+        .preferredColorScheme(.dark)
+        .statusBarHidden(true)
+        .task { controller.startPreview() }
+        .onDisappear { controller.stopPreview() }
+    }
+
+    private var topBar: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Computational Lab")
+                    .font(.headline.weight(.semibold))
+                Text(controller.isReady ? "RAW camera ready" : controller.state.rawValue)
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.72))
+            }
+            Spacer()
+            Label("RAW", systemImage: "camera.aperture")
+                .font(.caption.weight(.bold))
+                .padding(.horizontal, 11)
+                .padding(.vertical, 7)
+                .background(.black.opacity(0.42), in: Capsule())
+        }
+        .foregroundStyle(.white)
+    }
+
+    private var bottomBar: some View {
+        VStack(spacing: 18) {
+            if controller.state != .idle, controller.state != .failed {
+                HStack(spacing: 9) {
+                    ProgressView().tint(.white)
+                    Text(controller.state.rawValue)
+                        .font(.subheadline.weight(.medium))
+                    Spacer()
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(.black.opacity(0.42), in: Capsule())
+            }
+
+            HStack(alignment: .center) {
+                Button { controller.exportDebugBurst() } label: {
+                    VStack(spacing: 5) {
+                        Image(systemName: "externaldrive")
+                            .font(.title3)
+                        Text("Full RAW")
+                            .font(.caption2.weight(.semibold))
                     }
+                    .frame(width: 74, height: 58)
+                }
+                .disabled(!canCapture)
+                .opacity(canCapture ? 1 : 0.45)
 
-                    HStack(spacing: 12) {
-                        Button { controller.captureNaturalBurst() } label: {
-                            Label("Capture preview", systemImage: "camera.aperture")
-                                .frame(maxWidth: .infinity)
+                Spacer()
+
+                Button { controller.captureNaturalBurst() } label: {
+                    ZStack {
+                        Circle().fill(.white).frame(width: 78, height: 78)
+                        Circle().stroke(.black.opacity(0.7), lineWidth: 3).frame(width: 66, height: 66)
+                        if controller.state != .idle && controller.state != .failed {
+                            ProgressView().tint(.black)
                         }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(controller.state != .idle || !controller.isReady)
-
-                        Button { controller.exportDebugBurst() } label: {
-                            Label("Export full RAW", systemImage: "externaldrive")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(controller.state != .idle || !controller.isReady)
-                    }
-
-                    if controller.state != .idle, controller.state != .failed {
-                        HStack(spacing: 10) {
-                            ProgressView()
-                            Text(controller.state.rawValue)
-                                .font(.subheadline.weight(.medium))
-                            Spacer()
-                        }
-                        .foregroundStyle(.secondary)
-                        .padding(.vertical, 2)
-                    }
-
-                    if let resultJPEG = controller.resultJPEG, let image = UIImage(data: resultJPEG) {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("Latest result").font(.headline)
-                            Image(uiImage: image)
-                                .resizable()
-                                .scaledToFit()
-                                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                        }
-                    }
-
-                    if !controller.lastError.isEmpty {
-                        Label(controller.lastError, systemImage: "exclamationmark.triangle.fill")
-                            .font(.footnote)
-                            .foregroundStyle(.red)
-                            .padding(12)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(.red.opacity(0.10), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    }
-
-                    if controller.state == .failed {
-                        Button("Retry camera setup") { controller.reset(); controller.startPreview() }
-                            .buttonStyle(.bordered)
-                    }
-
-                    if !controller.diagnostics.isEmpty {
-                        DisclosureGroup("Processing diagnostics") {
-                            Text(controller.diagnostics)
-                                .font(.caption.monospaced())
-                                .textSelection(.enabled)
-                        }
-                        .padding(.top, 4)
                     }
                 }
-                .padding()
+                .disabled(!canCapture)
+                .accessibilityLabel("Capture computational photo")
+
+                Spacer()
+
+                Group {
+                    if let data = controller.resultJPEG, let image = UIImage(data: data) {
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFill()
+                    } else {
+                        Image(systemName: "photo")
+                            .font(.title3)
+                    }
+                }
+                .frame(width: 58, height: 58)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(.white.opacity(0.75), lineWidth: 1))
+                .accessibilityLabel("Latest result")
             }
-            .navigationTitle("Computational Lab")
-            .navigationBarTitleDisplayMode(.inline)
-            .background(Color(uiColor: .systemGroupedBackground))
-            .task { controller.startPreview() }
-            .onDisappear { controller.stopPreview() }
+            .foregroundStyle(.white)
+
+            Text("Capture preview  •  export full-resolution RAW for Windows")
+                .font(.caption2)
+                .foregroundStyle(.white.opacity(0.72))
+                .multilineTextAlignment(.center)
         }
     }
 
-    private var statusIcon: String {
-        if controller.state == .failed { return "exclamationmark.circle.fill" }
-        return controller.isReady ? "checkmark.circle.fill" : "circle.dashed"
+    private var errorBanner: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(controller.lastError, systemImage: "exclamationmark.triangle.fill")
+                .font(.footnote.weight(.medium))
+                .fixedSize(horizontal: false, vertical: true)
+            if controller.state == .failed {
+                Button("Retry camera") {
+                    controller.reset()
+                    controller.startPreview()
+                }
+                .font(.footnote.weight(.semibold))
+                .buttonStyle(.bordered)
+                .tint(.white)
+            }
+        }
+        .foregroundStyle(.white)
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.red.opacity(0.78), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .padding(.bottom, 14)
     }
 
-    private var statusColor: Color {
-        if controller.state == .failed { return .red }
-        return controller.isReady ? .green : .secondary
-    }
+    private var canCapture: Bool { controller.state == .idle && controller.isReady }
 }
 
 private struct CameraPreview: UIViewRepresentable {

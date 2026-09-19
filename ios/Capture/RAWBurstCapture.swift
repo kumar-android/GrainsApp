@@ -37,6 +37,9 @@ final class RAWBurstCapture: NSObject, AVCapturePhotoCaptureDelegate {
     private var targetCount = 8
     private var nextIndex: UInt32 = 0
     private var frames: [CapturedRAWFrame] = []
+    private let maximumBurstFrames = 8
+    private let minimumBurstFrames = 2
+    private let burstMemoryBudget = UInt64(384 * 1024 * 1024)
 
     func configure() throws {
         try queue.sync {
@@ -94,7 +97,7 @@ final class RAWBurstCapture: NSObject, AVCapturePhotoCaptureDelegate {
                     continuation.resume(throwing: NSError(domain: "GCamCamera", code: 8, userInfo: [NSLocalizedDescriptionKey: "A RAW burst is already in progress"]))
                     return
                 }
-                self.targetCount = max(1, min(count, 12))
+                self.targetCount = max(self.minimumBurstFrames, min(count, self.maximumBurstFrames))
                 self.nextIndex = 0
                 self.frames.removeAll(keepingCapacity: true)
                 self.continuation = continuation
@@ -134,6 +137,12 @@ final class RAWBurstCapture: NSObject, AVCapturePhotoCaptureDelegate {
                 guard let pixelBuffer = photo.pixelBuffer else { throw NSError(domain: "GCamCamera", code: 5, userInfo: [NSLocalizedDescriptionKey: "RAW pixel buffer missing"]) }
                 self.frames.append(try RAWBufferReader.read(pixelBuffer: pixelBuffer, metadata: photo.metadata, frameIndex: self.nextIndex))
                 self.nextIndex += 1
+                if self.frames.count == 1 {
+                    let bytesPerFrame = UInt64(self.frames[0].pixels.count) * UInt64(MemoryLayout<UInt16>.size)
+                    let deviceBudget = min(self.burstMemoryBudget, ProcessInfo.processInfo.physicalMemory / 8)
+                    let safeCount = bytesPerFrame == 0 ? self.minimumBurstFrames : Int(deviceBudget / bytesPerFrame)
+                    self.targetCount = min(self.targetCount, max(self.minimumBurstFrames, min(self.maximumBurstFrames, safeCount)))
+                }
                 if self.frames.count < self.targetCount { self.captureNext() }
                 else {
                     self.finish(.success(self.frames))
