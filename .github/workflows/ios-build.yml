@@ -12,15 +12,37 @@ jobs:
     runs-on: macos-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Build iOS application
         run: |
+          set -euo pipefail
           xcodebuild \
             -project ios_app/GCamCameraApp.xcodeproj \
             -target GCamCameraApp \
             -configuration Release \
             -sdk iphoneos \
+            -derivedDataPath build/DerivedData \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             build
+
+      - name: Package unsigned IPA
+        run: |
+          set -euo pipefail
+          app_path="build/DerivedData/Build/Products/Release-iphoneos/GCamCameraApp.app"
+          test -d "$app_path"
+          rm -rf build/ipa
+          mkdir -p build/ipa/Payload
+          cp -R "$app_path" build/ipa/Payload/
+          (cd build/ipa && /usr/bin/zip -qry ../GCamCameraApp-unsigned.ipa Payload)
+
+      - name: Upload iOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GCamCameraApp-unsigned-ipa
+          path: |
+            build/GCamCameraApp-unsigned.ipa
+            build/DerivedData/Build/Products/Release-iphoneos/GCamCameraApp.app
+          if-no-files-found: error
+          retention-days: 14
