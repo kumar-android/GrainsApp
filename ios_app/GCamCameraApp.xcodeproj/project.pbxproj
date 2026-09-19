@@ -133,7 +133,7 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
-		C10000000000000000000005 /* Embed Swift Standard Libraries */ = {isa = PBXShellScriptBuildPhase; buildActionMask = 2147483647; files = (); inputPaths = (); name = "Embed Swift Standard Libraries"; outputPaths = (); runOnlyForDeploymentPostprocessing = 0; shellPath = /bin/sh; shellScript = "\"${TOOLCHAIN_DIR}/usr/bin/swift-stdlib-tool\" --copy --verbose --sign \"${EXPANDED_CODE_SIGN_IDENTITY}\" --scan-executable \"${TARGET_BUILD_DIR}/${WRAPPER_NAME}/${EXECUTABLE_PATH}\" --scan-folder \"${TARGET_BUILD_DIR}/${WRAPPER_NAME}/Frameworks\" --platform \"${PLATFORM_NAME}\" --toolchain \"${TOOLCHAIN_DIR}\" --destination \"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}\""; showEnvVarsInLog = 0; };
+		C10000000000000000000005 /* Embed Swift Standard Libraries */ = {isa = PBXShellScriptBuildPhase; buildActionMask = 2147483647; files = (); inputPaths = (); name = "Embed Swift Standard Libraries"; outputPaths = (); runOnlyForDeploymentPostprocessing = 0; shellPath = /bin/sh; shellScript = "SWIFT_STDLIB_TOOL_PATH=\"$(xcrun --toolchain XcodeDefault --find swift-stdlib-tool)\"\n\"${SWIFT_STDLIB_TOOL_PATH}\" --copy --verbose --sign \"${EXPANDED_CODE_SIGN_IDENTITY}\" --scan-executable \"${TARGET_BUILD_DIR}/${WRAPPER_NAME}/${EXECUTABLE_PATH}\" --scan-folder \"${TARGET_BUILD_DIR}/${WRAPPER_NAME}/Frameworks\" --platform \"${PLATFORM_NAME}\" --toolchain \"${TOOLCHAIN_DIR}\" --destination \"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}\""; showEnvVarsInLog = 0; };
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
