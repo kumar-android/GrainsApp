@@ -19,6 +19,17 @@ xcodebuild -project ios_app/GCamCameraApp.xcodeproj \
   -allowProvisioningUpdates build
 ```
 
+Both commands rely on the project declaring its platform. `SDKROOT = iphoneos` and
+`SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"` are set at the project level and
+`TARGETED_DEVICE_FAMILY = "1,2"` on each target. Without them the device build only
+succeeds because `-sdk iphoneos` is passed explicitly, and the scheme exposes no iOS
+Simulator destination, so the test action fails with "Scheme GCamCameraApp is not
+currently configured for the test action".
+
+The shared scheme (`GCamCameraApp.xcodeproj/xcshareddata/xcschemes/GCamCameraApp.xcscheme`)
+must be committed for `-scheme GCamCameraApp` to resolve the test action deterministically
+on a fresh checkout.
+
 For tests:
 
 ```bash
