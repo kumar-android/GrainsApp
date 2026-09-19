@@ -62,9 +62,9 @@
 		B10000000000000000000017 /* CaptureDiagnostic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../ios/Diagnostics/CaptureDiagnostic.swift; sourceTree = SOURCE_ROOT; };
 		B10000000000000000000018 /* CameraView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../ios/UI/CameraView.swift; sourceTree = SOURCE_ROOT; };
 		B10000000000000000000019 /* PortableSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../ios/Support/PortableSettings.swift; sourceTree = SOURCE_ROOT; };
-		B10000000000000000000020 /* App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GCamCameraApp/App.swift; sourceTree = GROUP; };
-		B10000000000000000000021 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GCamCameraApp/ContentView.swift; sourceTree = GROUP; };
-		B10000000000000000000022 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = GCamCameraApp/Info.plist; sourceTree = GROUP; };
+		B10000000000000000000020 /* App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App.swift; sourceTree = "<group>"; };
+		B10000000000000000000021 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		B10000000000000000000022 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		B10000000000000000000023 /* CaptureState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../ios/Capture/CaptureState.swift; sourceTree = SOURCE_ROOT; };
 		B10000000000000000000024 /* CameraController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../ios/UI/CameraController.swift; sourceTree = SOURCE_ROOT; };
 		B10000000000000000000025 /* ProcessedImageEncoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../ios/UI/ProcessedImageEncoder.swift; sourceTree = SOURCE_ROOT; };
@@ -85,7 +85,7 @@
 		B10000000000000000000053 /* Photos.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Photos.framework; path = System/Library/Frameworks/Photos.framework; sourceTree = SDKROOT; };
 		B10000000000000000000054 /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
 		B10000000000000000000055 /* XCTest.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = XCTest.framework; path = System/Library/Frameworks/XCTest.framework; sourceTree = SDKROOT; };
-		B10000000000000000000060 /* RAWPackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GCamCameraAppTests/RAWPackTests.swift; sourceTree = GROUP; };
+		B10000000000000000000060 /* RAWPackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RAWPackTests.swift; sourceTree = "<group>"; };
 		B10000000000000000000061 /* GCamCameraAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = GCamCameraAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B10000000000000000000070 /* gcam_natural.xml */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = ../config/gcam_natural.xml; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
