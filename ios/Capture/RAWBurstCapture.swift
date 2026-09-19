@@ -130,7 +130,9 @@ enum RAWBufferReader {
             let neutral = values.map(\.floatValue)
             return (1 / max(neutral[safe: 0] ?? 1, 0.01), 1 / max(neutral[safe: 1] ?? 1, 0.01), 1 / max(neutral[safe: 2] ?? 1, 0.01))
         } ?? (1, 1, 1)
-        let detectedBitDepth = UInt16(max(1, min(16, Int(ceil(log2(Double(max(2, Int(white) + 1)))))))
+        let whiteLevelEstimate = max(2, Int(white) + 1)
+        let bitDepthEstimate = Int(ceil(log2(Double(whiteLevelEstimate))))
+        let detectedBitDepth = UInt16(max(1, min(16, bitDepthEstimate)))
         let rawMetadata = GcamRawMetadata(width: UInt32(width), height: UInt32(height), rowStrideBytes: UInt32(stride), bitDepth: detectedBitDepth, bayerPattern: UInt8(bayer), blackLevel: black, whiteLevel: white, iso: Float(iso?.first?.floatValue ?? 100), exposureTimeSeconds: exposure, aperture: aperture, colorTemperatureKelvin: 0, whiteBalance: wb, orientation: 1, timestampUnixMicros: Int64(Date().timeIntervalSince1970 * 1_000_000), frameIndex: frameIndex, lensIdentifier: "AVFoundation main wide", sensorIdentifier: "runtime DNG metadata")
         return CapturedRAWFrame(metadata: rawMetadata, pixels: pixels)
     }
