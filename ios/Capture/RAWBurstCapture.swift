@@ -55,6 +55,7 @@ final class RAWBurstCapture: NSObject, AVCapturePhotoCaptureDelegate {
     func start() { queue.async { self.session.startRunning() } }
     func stop() { queue.async { self.session.stopRunning() } }
 
+    @MainActor
     func captureBurst(count: Int) async throws -> [CapturedRAWFrame] {
         guard rawType != 0 else { throw NSError(domain: "GCamCamera", code: 4, userInfo: [NSLocalizedDescriptionKey: "RAW capture is not configured"]) }
         return try await withCheckedThrowingContinuation { continuation in
