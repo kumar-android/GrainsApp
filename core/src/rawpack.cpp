@@ -4,6 +4,7 @@
 #include <cstring>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 
@@ -48,6 +49,9 @@ float read_float(std::istream& in) {
 }
 
 void write_string(std::ostream& out, const std::string& value) {
+    if (value.size() > std::numeric_limits<std::uint32_t>::max()) {
+        throw std::invalid_argument("RAWPACK: metadata string is too large");
+    }
     write_integral<std::uint32_t>(out, static_cast<std::uint32_t>(value.size()));
     out.write(value.data(), static_cast<std::streamsize>(value.size()));
 }
@@ -75,7 +79,8 @@ void write_rawpack(const RawFrame& frame, const std::string& path) {
     const std::uint32_t strideBytes = frame.metadata.rowStrideBytes == 0
         ? frame.metadata.width * static_cast<std::uint32_t>(sizeof(std::uint16_t))
         : frame.metadata.rowStrideBytes;
-    if (strideBytes < frame.metadata.width * sizeof(std::uint16_t) || (strideBytes % 2U) != 0U) {
+    const std::size_t minimumStride = static_cast<std::size_t>(frame.metadata.width) * sizeof(std::uint16_t);
+    if (static_cast<std::size_t>(strideBytes) < minimumStride || (strideBytes % sizeof(std::uint16_t)) != 0U) {
         throw std::invalid_argument("RAWPACK: row stride is not compatible with uint16 pixels");
     }
 
@@ -160,9 +165,10 @@ RawFrame read_rawpack(const std::string& path) {
     frame.metadata.sensorIdentifier = read_string(in);
     frame.metadata.optionalMetadata = read_string(in);
 
+    const std::size_t minimumStride = static_cast<std::size_t>(frame.metadata.width) * sizeof(std::uint16_t);
     if (frame.metadata.width == 0 || frame.metadata.height == 0 ||
-        frame.metadata.rowStrideBytes < frame.metadata.width * sizeof(std::uint16_t) ||
-        (frame.metadata.rowStrideBytes % 2U) != 0U) {
+        static_cast<std::size_t>(frame.metadata.rowStrideBytes) < minimumStride ||
+        (frame.metadata.rowStrideBytes % sizeof(std::uint16_t)) != 0U) {
         throw std::runtime_error("RAWPACK: invalid dimensions or stride");
     }
     const std::uint32_t stridePixels = frame.metadata.rowStrideBytes / sizeof(std::uint16_t);

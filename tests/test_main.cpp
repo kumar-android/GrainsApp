@@ -58,14 +58,17 @@ void test_bayer_patterns() {
 
 void test_rawpack_roundtrip() {
     const RawFrame input = make_frame(12, 10, 7);
+    RawFrame padded = input;
+    padded.metadata.rowStrideBytes = padded.metadata.width * 2U + 8U;
     const fs::path path = fs::temp_directory_path() / "gcam_rawpack_roundtrip.rawpack";
-    write_rawpack(input, path.string());
+    write_rawpack(padded, path.string());
     const RawFrame output = read_rawpack(path.string());
-    require(output.metadata.width == input.metadata.width, "RAWPACK width roundtrip");
-    require(output.metadata.height == input.metadata.height, "RAWPACK height roundtrip");
-    require(output.metadata.bayer == input.metadata.bayer, "RAWPACK Bayer roundtrip");
-    require(output.metadata.lensIdentifier == input.metadata.lensIdentifier, "RAWPACK string roundtrip");
-    require(output.pixels == input.pixels, "RAWPACK pixels must be lossless");
+    require(output.metadata.width == padded.metadata.width, "RAWPACK width roundtrip");
+    require(output.metadata.height == padded.metadata.height, "RAWPACK height roundtrip");
+    require(output.metadata.rowStrideBytes == padded.metadata.rowStrideBytes, "RAWPACK padded stride roundtrip");
+    require(output.metadata.bayer == padded.metadata.bayer, "RAWPACK Bayer roundtrip");
+    require(output.metadata.lensIdentifier == padded.metadata.lensIdentifier, "RAWPACK string roundtrip");
+    require(output.pixels == padded.pixels, "RAWPACK pixels must be lossless with row padding");
     fs::remove(path);
 }
 

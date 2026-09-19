@@ -14,10 +14,14 @@ struct CameraView: View {
             HStack {
                 Button("Capture RAW burst") { controller.captureNaturalBurst() }
                     .buttonStyle(.borderedProminent)
-                    .disabled(controller.state != .idle)
+                    .disabled(controller.state != .idle || !controller.isReady)
                 Button("Debug export") { controller.exportDebugBurst() }
                     .buttonStyle(.bordered)
-                    .disabled(controller.state != .idle)
+                    .disabled(controller.state != .idle || !controller.isReady)
+            }
+            if controller.state == .failed {
+                Button("Retry") { controller.reset(); controller.startPreview() }
+                    .buttonStyle(.bordered)
             }
             if !controller.lastError.isEmpty { Text(controller.lastError).foregroundStyle(.red).font(.footnote) }
             Text("Final captures use Bayer RAW burst processing. Preview is intentionally separate from the full-quality path.")

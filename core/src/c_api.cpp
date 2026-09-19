@@ -82,7 +82,11 @@ extern "C" int gcam_add_raw_frame(GcamEngine* engine, const GcamRawFrameView* vi
         return fail(engine, error, error_buffer, error_buffer_size);
     }
     try {
-        if (view->width == 0 || view->height == 0 || view->pixel_count < view->width * view->height) {
+        const std::size_t expectedPixels = static_cast<std::size_t>(view->width) * view->height;
+        const std::size_t minimumStride = static_cast<std::size_t>(view->width) * sizeof(std::uint16_t);
+        if (view->width == 0 || view->height == 0 || expectedPixels > view->pixel_count ||
+            (view->row_stride_bytes != 0 && static_cast<std::size_t>(view->row_stride_bytes) < minimumStride) ||
+            (view->row_stride_bytes % sizeof(std::uint16_t)) != 0U) {
             throw std::invalid_argument("gcam_add_raw_frame: invalid dimensions or pixel count");
         }
         gcam::RawFrame frame;
@@ -104,7 +108,7 @@ extern "C" int gcam_add_raw_frame(GcamEngine* engine, const GcamRawFrameView* vi
         frame.metadata.lensIdentifier = safe_string(view->lens_identifier);
         frame.metadata.sensorIdentifier = safe_string(view->sensor_identifier);
         frame.metadata.optionalMetadata = safe_string(view->optional_metadata);
-        frame.pixels.assign(view->pixels, view->pixels + static_cast<std::size_t>(view->width) * view->height);
+        frame.pixels.assign(view->pixels, view->pixels + expectedPixels);
         if (!frame.valid()) throw std::invalid_argument("gcam_add_raw_frame: frame metadata failed validation");
         engine->frames.push_back(std::move(frame));
         return success(error_buffer, error_buffer_size);

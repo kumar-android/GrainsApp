@@ -11,16 +11,19 @@ final class GCamProcessor {
     deinit { gcam_destroy_engine(engine) }
 
     func process(frames: [CapturedRAWFrame], profilePath: String) throws -> (width: Int, height: Int, rgb: [Float], diagnostics: String) {
+        guard !frames.isEmpty else {
+            throw NSError(domain: "GCamCamera", code: 27, userInfo: [NSLocalizedDescriptionKey: "Cannot process an empty RAW burst"])
+        }
         var error = [CChar](repeating: 0, count: 1024)
         let loaded = profilePath.withCString { gcam_load_profile(engine, $0, &error, UInt32(error.count)) }
         guard loaded != 0 else { throw NSError(domain: "GCamCamera", code: 21, userInfo: [NSLocalizedDescriptionKey: String(cString: error)]) }
         guard gcam_begin_burst(engine, &error, UInt32(error.count)) != 0 else { throw NSError(domain: "GCamCamera", code: 22, userInfo: [NSLocalizedDescriptionKey: String(cString: error)]) }
         for (index, frame) in frames.enumerated() {
-            var wb = [frame.metadata.whiteBalance.0, frame.metadata.whiteBalance.1, frame.metadata.whiteBalance.2]
+            let wb = [frame.metadata.whiteBalance.0, frame.metadata.whiteBalance.1, frame.metadata.whiteBalance.2]
             let added = frame.metadata.lensIdentifier.withCString { lens in
                 frame.metadata.sensorIdentifier.withCString { sensor in
                     frame.pixels.withUnsafeBufferPointer { pixels in
-                        var view = GcamRawFrameView(width: frame.metadata.width, height: frame.metadata.height, row_stride_bytes: frame.metadata.rowStrideBytes, bit_depth: frame.metadata.bitDepth, bayer_pattern: frame.metadata.bayerPattern, black_level: frame.metadata.blackLevel, white_level: frame.metadata.whiteLevel, iso: frame.metadata.iso, exposure_time_seconds: frame.metadata.exposureTimeSeconds, aperture: frame.metadata.aperture, color_temperature_kelvin: frame.metadata.colorTemperatureKelvin, white_balance: (wb[0], wb[1], wb[2]), orientation: frame.metadata.orientation, timestamp_unix_micros: frame.metadata.timestampUnixMicros, frame_index: UInt32(index), lens_identifier: lens, sensor_identifier: sensor, optional_metadata: nil, pixels: pixels.baseAddress, pixel_count: UInt32(frame.pixels.count))
+                        var view = GcamRawFrameView(width: frame.metadata.width, height: frame.metadata.height, row_stride_bytes: frame.metadata.rowStrideBytes, bit_depth: frame.metadata.bitDepth, bayer_pattern: frame.metadata.bayerPattern, black_level: frame.metadata.blackLevel, white_level: frame.metadata.whiteLevel, iso: frame.metadata.iso, exposure_time_seconds: frame.metadata.exposureTimeSeconds, aperture: frame.metadata.aperture, color_temperature_kelvin: frame.metadata.colorTemperatureKelvin, white_balance: (wb[0], wb[1], wb[2]), orientation: frame.metadata.orientation, timestamp_unix_micros: frame.metadata.timestampUnixMicros, frame_index: frame.metadata.frameIndex, lens_identifier: lens, sensor_identifier: sensor, optional_metadata: nil, pixels: pixels.baseAddress, pixel_count: UInt32(frame.pixels.count))
                         return gcam_add_raw_frame(engine, &view, &error, UInt32(error.count))
                     }
                 }

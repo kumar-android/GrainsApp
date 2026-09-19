@@ -480,10 +480,12 @@ PixelChannel bayer_channel(BayerPattern pattern, std::uint32_t x, std::uint32_t 
 }
 
 bool RawFrame::valid() const noexcept {
-    const std::uint32_t minimumStride = metadata.width * static_cast<std::uint32_t>(sizeof(std::uint16_t));
-    return metadata.width > 0 && metadata.height > 0 && metadata.bayer != BayerPattern::Unknown &&
-        metadata.whiteLevel > metadata.blackLevel && metadata.rowStrideBytes >= minimumStride &&
-        (metadata.rowStrideBytes % 2U) == 0U && pixels.size() >= static_cast<std::size_t>(metadata.width) * metadata.height;
+    const std::size_t minimumStride = static_cast<std::size_t>(metadata.width) * sizeof(std::uint16_t);
+    const std::size_t expectedPixels = static_cast<std::size_t>(metadata.width) * metadata.height;
+    const std::size_t stride = metadata.rowStrideBytes == 0 ? minimumStride : metadata.rowStrideBytes;
+    return metadata.width > 0 && metadata.height > 0 && metadata.bitDepth > 0 && metadata.bitDepth <= 16 &&
+        metadata.bayer != BayerPattern::Unknown && metadata.whiteLevel > metadata.blackLevel &&
+        stride >= minimumStride && (stride % sizeof(std::uint16_t)) == 0U && pixels.size() >= expectedPixels;
 }
 
 std::uint16_t RawFrame::at(std::uint32_t x, std::uint32_t y) const noexcept {
@@ -496,7 +498,8 @@ std::uint16_t& RawFrame::at(std::uint32_t x, std::uint32_t y) noexcept {
 
 ProcessResult process_burst(const std::vector<RawFrame>& frames, const TuningProfile& profile) {
     if (frames.empty()) throw std::invalid_argument("Cannot process an empty RAW burst");
-    if (frames.front().metadata.width == 0 || frames.front().metadata.height == 0) throw std::invalid_argument("RAW burst has invalid dimensions");
+    if (profile.maxFrames == 0) throw std::invalid_argument("RAW burst profile allows no frames");
+    if (!frames.front().valid()) throw std::invalid_argument("RAW burst contains an invalid first frame");
     const auto start = std::chrono::steady_clock::now();
 
     const std::uint32_t width = frames.front().metadata.width;
@@ -505,7 +508,7 @@ ProcessResult process_burst(const std::vector<RawFrame>& frames, const TuningPro
     const std::size_t frameLimit = std::min<std::size_t>(frames.size(), profile.maxFrames);
     selected.reserve(frameLimit);
     for (std::size_t i = 0; i < frameLimit; ++i) {
-        if (frames[i].metadata.width != width || frames[i].metadata.height != height || frames[i].metadata.bayer != frames.front().metadata.bayer) {
+        if (!frames[i].valid() || frames[i].metadata.width != width || frames[i].metadata.height != height || frames[i].metadata.bayer != frames.front().metadata.bayer) {
             throw std::invalid_argument("RAW burst frames do not share dimensions and Bayer pattern");
         }
         selected.push_back(frames[i]);

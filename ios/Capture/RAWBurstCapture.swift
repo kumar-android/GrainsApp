@@ -32,24 +32,26 @@ final class RAWBurstCapture: NSObject, AVCapturePhotoCaptureDelegate {
     private let queue = DispatchQueue(label: "gcam.capture.serial")
     private let discovery = RAWDeviceDiscovery()
     private var rawType: OSType = 0
+    private var isConfigured = false
     private var continuation: CheckedContinuation<[CapturedRAWFrame], Error>?
     private var targetCount = 8
     private var nextIndex: UInt32 = 0
     private var frames: [CapturedRAWFrame] = []
 
     func configure() throws {
+        guard !isConfigured else { return }
         let camera = try discovery.mainWideCamera()
         session.beginConfiguration()
+        defer { session.commitConfiguration() }
         session.sessionPreset = .photo
         guard let input = try? AVCaptureDeviceInput(device: camera), session.canAddInput(input), session.canAddOutput(output) else {
-            session.commitConfiguration()
             throw NSError(domain: "GCamCamera", code: 3, userInfo: [NSLocalizedDescriptionKey: "Unable to configure the main camera"])
         }
         session.addInput(input)
         session.addOutput(output)
         rawType = try discovery.highestQualityRAWType(from: output)
         if #available(iOS 13.0, *) { output.maxPhotoQualityPrioritization = .quality }
-        session.commitConfiguration()
+        isConfigured = true
     }
 
     func start() { queue.async { self.session.startRunning() } }
@@ -57,7 +59,7 @@ final class RAWBurstCapture: NSObject, AVCapturePhotoCaptureDelegate {
 
     @MainActor
     func captureBurst(count: Int) async throws -> [CapturedRAWFrame] {
-        guard rawType != 0 else { throw NSError(domain: "GCamCamera", code: 4, userInfo: [NSLocalizedDescriptionKey: "RAW capture is not configured"]) }
+        guard isConfigured, rawType != 0 else { throw NSError(domain: "GCamCamera", code: 4, userInfo: [NSLocalizedDescriptionKey: "RAW capture is not configured"]) }
         return try await withCheckedThrowingContinuation { continuation in
             queue.async {
                 self.targetCount = max(1, min(count, 12))
@@ -76,11 +78,19 @@ final class RAWBurstCapture: NSObject, AVCapturePhotoCaptureDelegate {
         output.capturePhoto(with: settings, delegate: self)
     }
 
+    private func finish(_ result: Result<[CapturedRAWFrame], Error>) {
+        guard let continuation else { return }
+        self.continuation = nil
+        switch result {
+        case .success(let frames): continuation.resume(returning: frames)
+        case .failure(let error): continuation.resume(throwing: error)
+        }
+    }
+
     func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
         queue.async {
             if let error {
-                self.continuation?.resume(throwing: error)
-                self.continuation = nil
+                self.finish(.failure(error))
                 return
             }
             do {
@@ -89,14 +99,17 @@ final class RAWBurstCapture: NSObject, AVCapturePhotoCaptureDelegate {
                 self.nextIndex += 1
                 if self.frames.count < self.targetCount { self.captureNext() }
                 else {
-                    self.continuation?.resume(returning: self.frames)
-                    self.continuation = nil
+                    self.finish(.success(self.frames))
                 }
             } catch {
-                self.continuation?.resume(throwing: error)
-                self.continuation = nil
+                self.finish(.failure(error))
             }
         }
+    }
+
+    func photoOutput(_ output: AVCapturePhotoOutput, didFinishCaptureFor resolvedSettings: AVCaptureResolvedPhotoSettings, error: Error?) {
+        guard let error else { return }
+        queue.async { self.finish(.failure(error)) }
     }
 }
 
