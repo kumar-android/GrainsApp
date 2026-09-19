@@ -37,6 +37,7 @@ final class RAWBurstCapture: NSObject, AVCapturePhotoCaptureDelegate {
     private var targetCount = 8
     private var nextIndex: UInt32 = 0
     private var frames: [CapturedRAWFrame] = []
+    private var processingMaxDimension: Int?
     private let maximumBurstFrames = 8
     private let minimumBurstFrames = 2
     private let burstMemoryBudget = UInt64(384 * 1024 * 1024)
@@ -82,7 +83,7 @@ final class RAWBurstCapture: NSObject, AVCapturePhotoCaptureDelegate {
     }
 
     @MainActor
-    func captureBurst(count: Int) async throws -> [CapturedRAWFrame] {
+    func captureBurst(count: Int, maxDimension: Int? = nil) async throws -> [CapturedRAWFrame] {
         return try await withCheckedThrowingContinuation { continuation in
             queue.async {
                 guard self.isConfigured, self.rawType != 0 else {
@@ -99,6 +100,7 @@ final class RAWBurstCapture: NSObject, AVCapturePhotoCaptureDelegate {
                 }
                 self.targetCount = max(self.minimumBurstFrames, min(count, self.maximumBurstFrames))
                 self.nextIndex = 0
+                self.processingMaxDimension = maxDimension
                 self.frames.removeAll(keepingCapacity: true)
                 self.continuation = continuation
                 self.captureNext()
@@ -120,9 +122,11 @@ final class RAWBurstCapture: NSObject, AVCapturePhotoCaptureDelegate {
         case .success:
             let capturedFrames = self.frames
             self.frames.removeAll(keepingCapacity: false)
+            self.processingMaxDimension = nil
             continuation.resume(returning: capturedFrames)
         case .failure(let error):
             self.frames.removeAll(keepingCapacity: false)
+            self.processingMaxDimension = nil
             continuation.resume(throwing: error)
         }
     }
@@ -135,7 +139,7 @@ final class RAWBurstCapture: NSObject, AVCapturePhotoCaptureDelegate {
             }
             do {
                 guard let pixelBuffer = photo.pixelBuffer else { throw NSError(domain: "GCamCamera", code: 5, userInfo: [NSLocalizedDescriptionKey: "RAW pixel buffer missing"]) }
-                self.frames.append(try RAWBufferReader.read(pixelBuffer: pixelBuffer, metadata: photo.metadata, frameIndex: self.nextIndex))
+                self.frames.append(try RAWBufferReader.read(pixelBuffer: pixelBuffer, metadata: photo.metadata, frameIndex: self.nextIndex, maxDimension: self.processingMaxDimension))
                 self.nextIndex += 1
                 if self.frames.count == 1 {
                     let bytesPerFrame = UInt64(self.frames[0].pixels.count) * UInt64(MemoryLayout<UInt16>.size)
@@ -160,7 +164,7 @@ final class RAWBurstCapture: NSObject, AVCapturePhotoCaptureDelegate {
 }
 
 enum RAWBufferReader {
-    static func read(pixelBuffer: CVPixelBuffer, metadata: [String: Any], frameIndex: UInt32) throws -> CapturedRAWFrame {
+    static func read(pixelBuffer: CVPixelBuffer, metadata: [String: Any], frameIndex: UInt32, maxDimension: Int? = nil) throws -> CapturedRAWFrame {
         CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
         guard let base = CVPixelBufferGetBaseAddress(pixelBuffer) else { throw NSError(domain: "GCamCamera", code: 6, userInfo: [NSLocalizedDescriptionKey: "RAW base address missing"]) }
@@ -173,9 +177,20 @@ enum RAWBufferReader {
         }
         let source = base.assumingMemoryBound(to: UInt16.self)
         let samplesPerRow = stride / MemoryLayout<UInt16>.stride
-        var pixels = [UInt16](repeating: 0, count: width * height)
-        for y in 0..<height {
-            for x in 0..<width { pixels[y * width + x] = source[y * samplesPerRow + x] }
+        var scale = 1
+        if let maxDimension, maxDimension > 0, max(width, height) > maxDimension {
+            scale = Int(ceil(Double(max(width, height)) / Double(maxDimension)))
+            if scale > 1, scale % 2 != 0 { scale += 1 }
+        }
+        let outputWidth = (width + scale - 1) / scale
+        let outputHeight = (height + scale - 1) / scale
+        var pixels = [UInt16](repeating: 0, count: outputWidth * outputHeight)
+        for y in 0..<outputHeight {
+            let sourceY = min(y * scale, height - 1)
+            for x in 0..<outputWidth {
+                let sourceX = min(x * scale, width - 1)
+                pixels[y * outputWidth + x] = source[sourceY * samplesPerRow + sourceX]
+            }
         }
 
         let dng = metadata["{DNG}"] as? [String: Any] ?? metadata
@@ -197,7 +212,7 @@ enum RAWBufferReader {
         let whiteLevelEstimate = max(2, Int(white) + 1)
         let bitDepthEstimate = Int(ceil(log2(Double(whiteLevelEstimate))))
         let detectedBitDepth = UInt16(max(1, min(16, bitDepthEstimate)))
-        let rawMetadata = GcamRawMetadata(width: UInt32(width), height: UInt32(height), rowStrideBytes: UInt32(stride), bitDepth: detectedBitDepth, bayerPattern: UInt8(bayer), blackLevel: black, whiteLevel: white, iso: Float(iso?.first?.floatValue ?? 100), exposureTimeSeconds: exposure, aperture: aperture, colorTemperatureKelvin: 0, whiteBalance: wb, orientation: 1, timestampUnixMicros: Int64(Date().timeIntervalSince1970 * 1_000_000), frameIndex: frameIndex, lensIdentifier: "AVFoundation main wide", sensorIdentifier: "runtime DNG metadata")
+        let rawMetadata = GcamRawMetadata(width: UInt32(outputWidth), height: UInt32(outputHeight), rowStrideBytes: UInt32(outputWidth * MemoryLayout<UInt16>.size), bitDepth: detectedBitDepth, bayerPattern: UInt8(bayer), blackLevel: black, whiteLevel: white, iso: Float(iso?.first?.floatValue ?? 100), exposureTimeSeconds: exposure, aperture: aperture, colorTemperatureKelvin: 0, whiteBalance: wb, orientation: 1, timestampUnixMicros: Int64(Date().timeIntervalSince1970 * 1_000_000), frameIndex: frameIndex, lensIdentifier: "AVFoundation main wide", sensorIdentifier: "runtime DNG metadata")
         return CapturedRAWFrame(metadata: rawMetadata, pixels: pixels)
     }
 }

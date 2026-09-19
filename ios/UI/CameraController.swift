@@ -60,7 +60,7 @@ final class CameraController: ObservableObject {
             guard let self else { return }
             do {
                 state = .capturing
-                let frames = try await capture.captureBurst(count: 8)
+                let frames = try await capture.captureBurst(count: 8, maxDimension: 2048)
                 state = .collecting
                 guard let profilePath = Bundle.main.path(forResource: "gcam_natural", ofType: "xml") else {
                     throw NSError(domain: "GCamCamera", code: 26, userInfo: [NSLocalizedDescriptionKey: "The bundled tuning profile is missing"])
