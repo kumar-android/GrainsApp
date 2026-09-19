@@ -20,7 +20,6 @@ jobs:
           xcodebuild \
             -project ios_app/GCamCameraApp.xcodeproj \
             -scheme GCamCameraApp \
-            -target GCamCameraApp \
             -configuration Release \
             -sdk iphoneos \
             -derivedDataPath build/DerivedData \
