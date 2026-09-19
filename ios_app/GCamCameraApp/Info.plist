@@ -11,5 +11,7 @@
     <key>CFBundleDisplayName</key><string>GCam Computational Lab</string>
     <key>NSCameraUsageDescription</key><string>Capture Bayer RAW bursts for on-device computational photography.</string>
     <key>NSPhotoLibraryAddUsageDescription</key><string>Save the processed result and optional RAW debug material.</string>
+    <key>UILaunchScreen</key>
+    <dict/>
 </dict>
 </plist>

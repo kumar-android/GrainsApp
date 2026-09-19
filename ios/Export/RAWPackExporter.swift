@@ -18,29 +18,44 @@ enum RAWPackExporter {
                 throw NSError(domain: "GCamCamera", code: 31, userInfo: [NSLocalizedDescriptionKey: "RAW frame dimensions or stride are invalid"])
             }
             let path = directory.appendingPathComponent(String(format: "frame_%04u.rawpack", frame.metadata.frameIndex))
-            var data = Data("GCAMRAW1".utf8)
-            data.appendLE(UInt32(1))
-            data.appendLE(frame.metadata.width)
-            data.appendLE(frame.metadata.height)
-            data.appendLE(UInt32(strideBytes))
-            data.appendLE(frame.metadata.bitDepth)
-            data.append(UInt8(frame.metadata.bayerPattern)); data.append(0); data.appendLE(UInt16(0))
-            data.appendLE(frame.metadata.blackLevel); data.appendLE(frame.metadata.whiteLevel); data.appendLE(frame.metadata.iso)
-            data.appendLE(frame.metadata.exposureTimeSeconds); data.appendLE(frame.metadata.aperture); data.appendLE(frame.metadata.colorTemperatureKelvin)
-            data.appendLE(frame.metadata.whiteBalance.0); data.appendLE(frame.metadata.whiteBalance.1); data.appendLE(frame.metadata.whiteBalance.2)
-            data.appendLE(frame.metadata.orientation); data.appendLE(frame.metadata.timestampUnixMicros); data.appendLE(frame.metadata.frameIndex)
-            data.appendString(frame.metadata.lensIdentifier); data.appendString(frame.metadata.sensorIdentifier); data.appendString("iOS AVFoundation RAW")
-            let stridePixels = strideBytes / MemoryLayout<UInt16>.stride
-            for y in 0..<height {
-                let rowStart = y * width
-                for x in 0..<stridePixels {
-                    data.appendLE(x < width ? frame.pixels[rowStart + x] : 0)
-                }
-            }
-            try data.write(to: path, options: .atomic)
+            try serialize(frame: frame, width: width, height: height, strideBytes: strideBytes).write(to: path, options: .atomic)
             manifest += path.lastPathComponent + "\n"
         }
         try Data(manifest.utf8).write(to: directory.appendingPathComponent("burst.burst"), options: .atomic)
+    }
+
+    // Rows are appended whole. A full-resolution frame is millions of sensels, and
+    // appending them one value at a time made the export take tens of seconds while
+    // the whole burst was still resident in memory.
+    private static func serialize(frame: CapturedRAWFrame, width: Int, height: Int, strideBytes: Int) -> Data {
+        var data = header(frame: frame, strideBytes: strideBytes)
+        data.reserveCapacity(data.count + height * strideBytes)
+        let stridePixels = strideBytes / MemoryLayout<UInt16>.stride
+        var row = [UInt16](repeating: 0, count: stridePixels)
+        for y in 0..<height {
+            let rowStart = y * width
+            for x in 0..<width { row[x] = frame.pixels[rowStart + x] }
+            row.withUnsafeBytes { bytes in
+                data.append(contentsOf: bytes)
+            }
+        }
+        return data
+    }
+
+    private static func header(frame: CapturedRAWFrame, strideBytes: Int) -> Data {
+        var data = Data("GCAMRAW1".utf8)
+        data.appendLE(UInt32(1))
+        data.appendLE(frame.metadata.width)
+        data.appendLE(frame.metadata.height)
+        data.appendLE(UInt32(strideBytes))
+        data.appendLE(frame.metadata.bitDepth)
+        data.append(UInt8(frame.metadata.bayerPattern)); data.append(0); data.appendLE(UInt16(0))
+        data.appendLE(frame.metadata.blackLevel); data.appendLE(frame.metadata.whiteLevel); data.appendLE(frame.metadata.iso)
+        data.appendLE(frame.metadata.exposureTimeSeconds); data.appendLE(frame.metadata.aperture); data.appendLE(frame.metadata.colorTemperatureKelvin)
+        data.appendLE(frame.metadata.whiteBalance.0); data.appendLE(frame.metadata.whiteBalance.1); data.appendLE(frame.metadata.whiteBalance.2)
+        data.appendLE(frame.metadata.orientation); data.appendLE(frame.metadata.timestampUnixMicros); data.appendLE(frame.metadata.frameIndex)
+        data.appendString(frame.metadata.lensIdentifier); data.appendString(frame.metadata.sensorIdentifier); data.appendString("iOS AVFoundation RAW")
+        return data
     }
 }
 

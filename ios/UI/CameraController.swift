@@ -110,7 +110,9 @@ final class CameraController: ObservableObject {
                 let frames = try await capture.captureBurst(count: 8)
                 try Task.checkCancellation()
                 state = .saving
-                let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("GCamRAW_\(Int(Date().timeIntervalSince1970))")
+                let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+                    ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+                let directory = documents.appendingPathComponent("GCamRAW_\(Int(Date().timeIntervalSince1970))")
                 try await Task.detached(priority: .utility) {
                     try RAWPackExporter.write(frames: frames, to: directory)
                 }.value

@@ -15,10 +15,17 @@ enum ProcessedImageEncoder {
             }
         }
         let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
-        guard let image = rgba.withUnsafeMutableBytes({ bytes -> CGImage? in
-            guard let context = CGContext(data: bytes.baseAddress, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4, space: colorSpace, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return nil }
-            return context.makeImage()
-        }) else {
+        // The bitmap context owns its storage. Copying into it while the Swift
+        // buffer pointer is still valid avoids handing CoreGraphics a pointer that
+        // escapes the closure, which is undefined once the array is released.
+        guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4, space: colorSpace, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else {
+            throw NSError(domain: "GCamCamera", code: 51, userInfo: [NSLocalizedDescriptionKey: "Unable to allocate the display image buffer"])
+        }
+        rgba.withUnsafeBytes { bytes in
+            guard let source = bytes.baseAddress, let destination = context.data else { return }
+            destination.copyMemory(from: source, byteCount: width * height * 4)
+        }
+        guard let image = context.makeImage() else {
             throw NSError(domain: "GCamCamera", code: 51, userInfo: [NSLocalizedDescriptionKey: "Unable to create display image"])
         }
         guard let data = UIImage(cgImage: image).jpegData(compressionQuality: 0.96) else {

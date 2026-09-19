@@ -45,6 +45,12 @@ final class RAWBurstCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchecked
     private let maximumBurstFrames = 8
     private let minimumBurstFrames = 2
     private let burstMemoryBudget = UInt64(384 * 1024 * 1024)
+    // AVFoundation can end a request without any delegate callback when the
+    // session is interrupted (device lock, call, thermal shutdown). Bounding each
+    // request keeps the shutter from staying stuck in "Capturing" forever.
+    private let requestStallTimeout = DispatchTimeInterval.seconds(10)
+    private var stallWatchdog: DispatchWorkItem?
+    private var burstGeneration: UInt64 = 0
 
     private func configureSession() throws {
         guard !isConfigured else { return }
@@ -117,7 +123,9 @@ final class RAWBurstCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchecked
                 self.nextIndex = 0
                 self.processingMaxDimension = maxDimension
                 self.frames.removeAll(keepingCapacity: true)
+                self.burstGeneration &+= 1
                 self.continuation = continuation
+                self.armStallWatchdog()
                 self.captureNext()
             }
         }
@@ -137,6 +145,7 @@ final class RAWBurstCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchecked
         let settings = Self.rawSettings(pixelFormat: rawType)
         activeRequestID = settings.uniqueID
         receivedRAW = false
+        armStallWatchdog()
         output.capturePhoto(with: settings, delegate: self)
     }
 
@@ -149,9 +158,22 @@ final class RAWBurstCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchecked
         return settings
     }
 
+    private func armStallWatchdog() {
+        stallWatchdog?.cancel()
+        let generation = burstGeneration
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.continuation != nil, self.burstGeneration == generation else { return }
+            self.finish(.failure(NSError(domain: "GCamCamera", code: 13, userInfo: [NSLocalizedDescriptionKey: "The camera stopped responding during the RAW burst. Try again."])))
+        }
+        stallWatchdog = work
+        queue.asyncAfter(deadline: .now() + requestStallTimeout, execute: work)
+    }
+
     private func finish(_ result: Result<[CapturedRAWFrame], Error>) {
         guard let continuation else { return }
         self.continuation = nil
+        stallWatchdog?.cancel()
+        stallWatchdog = nil
         activeRequestID = nil
         receivedRAW = false
         switch result {
@@ -237,7 +259,12 @@ enum RAWBufferReader {
         let source = base.assumingMemoryBound(to: UInt16.self)
         let samplesPerRow = stride / MemoryLayout<UInt16>.stride
         let pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer)
-        guard let formatBayer = bayerCode(pixelFormat: pixelFormat) else {
+        // The delivered buffer layout normally defines the CFA order, but the Bayer
+        // formats that AVCapturePhotoOutput also reports as RAW may describe their
+        // layout in metadata instead. Prefer the pixel format and fall back to the
+        // DNG pattern so those devices capture instead of failing every frame.
+        let dng = metadata["{DNG}"] as? [String: Any] ?? metadata
+        guard let bayer = bayerCode(pixelFormat: pixelFormat) ?? bayerCode(cfaPattern: dng["CFAPattern"] as? [NSNumber]) else {
             throw NSError(domain: "GCamCamera", code: 9, userInfo: [NSLocalizedDescriptionKey: "Unsupported RAW pixel format: \(pixelFormat)"])
         }
         let sampling = try BayerSampling(width: width, height: height, maxDimension: maxDimension)
@@ -252,7 +279,6 @@ enum RAWBufferReader {
             }
         }
 
-        let dng = metadata["{DNG}"] as? [String: Any] ?? metadata
         func firstFloat(_ value: Any?) -> Float? {
             if let number = value as? NSNumber { return number.floatValue }
             if let numbers = value as? [NSNumber] { return numbers.first?.floatValue }
@@ -266,9 +292,6 @@ enum RAWBufferReader {
         let iso = (metadata["{Exif}"] as? [String: Any])?["ISOSpeedRatings"] as? [NSNumber]
         let exposure = ((metadata["{Exif}"] as? [String: Any])?["ExposureTime"] as? NSNumber)?.floatValue ?? 0
         let aperture = ((metadata["{Exif}"] as? [String: Any])?["FNumber"] as? NSNumber)?.floatValue ?? 0
-        // The pixel format defines the delivered buffer's CFA order even when
-        // AVFoundation omits DNG CFAPattern from photo.metadata.
-        let bayer = formatBayer
         let wb: (Float, Float, Float) = (dng["AsShotNeutral"] as? [NSNumber]).map { values in
             let neutral = values.map(\.floatValue)
             return (1 / max(neutral[safe: 0] ?? 1, 0.01), 1 / max(neutral[safe: 1] ?? 1, 0.01), 1 / max(neutral[safe: 2] ?? 1, 0.01))
@@ -287,6 +310,19 @@ private func bayerCode(pixelFormat: OSType) -> UInt8? {
     case kCVPixelFormatType_14Bayer_BGGR: return 1
     case kCVPixelFormatType_14Bayer_GRBG: return 2
     case kCVPixelFormatType_14Bayer_GBRG: return 3
+    default: return nil
+    }
+}
+
+// DNG CFAPattern entries are CFA plane indices; camera DNGs describe them in
+// red, green, blue order, which is what the portable core expects.
+private func bayerCode(cfaPattern: [NSNumber]?) -> UInt8? {
+    guard let values = cfaPattern, values.count >= 4 else { return nil }
+    switch values.prefix(4).map(\.intValue) {
+    case [0, 1, 1, 2]: return 0 // RGGB
+    case [2, 1, 1, 0]: return 1 // BGGR
+    case [1, 0, 2, 1]: return 2 // GRBG
+    case [1, 2, 0, 1]: return 3 // GBRG
     default: return nil
     }
 }

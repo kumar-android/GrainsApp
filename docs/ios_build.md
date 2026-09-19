@@ -54,6 +54,23 @@ On a physical RAW-capable iPhone:
 5. Try Full RAW export and verify the full-resolution frames in the app's
    Documents directory. On a device without Bayer RAW, verify a readable error.
 
+Two further invariants keep capture recoverable on real hardware:
+
+1. The CFA order is taken from the delivered pixel format and falls back to the DNG
+   `CFAPattern`, because the Bayer formats AVFoundation also accepts as RAW may
+   describe their layout in metadata. A frame is rejected only when neither source
+   identifies the mosaic.
+2. Every photo request is bounded by a stall watchdog. If AVFoundation ends a
+   request without a delegate callback (lock, call, thermal shutdown), the burst
+   fails with an error instead of leaving the shutter stuck in "Capturing".
+
+The on-device preview path also depends on the portable engine staying affordable
+for a 2048-class 8-frame burst, so alignment gathers the reference luma plane once
+and the merge and normalizer reuse their scratch buffers. Keep that equivalence test
+running when the core changes: process a generated burst at 2016x1512 with
+`config/gcam_natural.xml` and `config/gcam_high_detail.xml` before and after a change
+and compare the output PPM hashes.
+
 If a device still closes the app, retain the Xcode exception/backtrace (or iOS
 JetsamEvent if it was killed for memory), the device/iOS version, and whether the
 failure happened at the shutter or later in processing.

@@ -79,6 +79,10 @@ NormalizedFrame normalize_raw(const RawFrame& raw, const TuningProfile& profile,
     const float black = raw.metadata.blackLevel;
     const float white = std::max(black + 1.0f, raw.metadata.whiteLevel);
     const float range = white - black;
+    // Reused across pixels: keeping this allocation out of the per-pixel loop
+    // matters for multi-megapixel bursts on device.
+    std::vector<float> neighbours;
+    neighbours.reserve(4);
     for (std::uint32_t y = 0; y < frame.height; ++y) {
         for (std::uint32_t x = 0; x < frame.width; ++x) {
             float sensor = static_cast<float>(raw.at(x, y));
@@ -86,8 +90,7 @@ NormalizedFrame normalize_raw(const RawFrame& raw, const TuningProfile& profile,
             // Replace only an isolated CFA outlier whose same-colour neighbours
             // agree. A bright object therefore remains untouched when its local
             // same-colour samples are also bright or structurally varied.
-            std::vector<float> neighbours;
-            neighbours.reserve(4);
+            neighbours.clear();
             const PixelChannel channel = bayer_channel(raw.metadata.bayer, x, y);
             for (const auto offset : {std::pair<int, int>{-2, 0}, {2, 0}, {0, -2}, {0, 2}}) {
                 const int nx = static_cast<int>(x) + offset.first;
@@ -172,18 +175,33 @@ AlignmentEstimate estimate_alignment(const NormalizedFrame& reference, const Nor
     const int searchRadius = 6;
     const int stride = reference.width > 256 ? 4 : 2;
     const int margin = searchRadius + 3;
+    // The reference samples are identical for every candidate shift, and integer
+    // shifts inside the margin never leave the frame, so gathering them once turns
+    // each candidate comparison into a direct luma read instead of a bilinear fetch.
+    // Sample values and summation order are unchanged by this gather.
+    struct LumaSample {
+        int x;
+        int y;
+        float value;
+    };
+    std::vector<LumaSample> grid;
+    grid.reserve((static_cast<std::size_t>(reference.width) / static_cast<std::size_t>(stride) + 1U) *
+        (static_cast<std::size_t>(reference.height) / static_cast<std::size_t>(stride) + 1U));
+    for (int y = margin; y + margin < static_cast<int>(reference.height); y += stride) {
+        for (int x = margin; x + margin < static_cast<int>(reference.width); x += stride) {
+            grid.push_back(LumaSample{x, y, luma_sample(reference, static_cast<float>(x), static_cast<float>(y))});
+        }
+    }
+    const std::size_t gridCount = grid.size();
     for (int dy = -searchRadius; dy <= searchRadius; ++dy) {
         for (int dx = -searchRadius; dx <= searchRadius; ++dx) {
             double error = 0.0;
-            std::uint64_t count = 0;
-            for (int y = margin; y + margin < static_cast<int>(reference.height); y += stride) {
-                for (int x = margin; x + margin < static_cast<int>(reference.width); x += stride) {
-                    const float difference = luma_sample(candidate, static_cast<float>(x + dx), static_cast<float>(y + dy)) - luma_sample(reference, static_cast<float>(x), static_cast<float>(y));
-                    error += static_cast<double>(difference * difference);
-                    ++count;
-                }
+            for (const LumaSample& sample : grid) {
+                const std::size_t index = static_cast<std::size_t>(sample.y + dy) * reference.width + static_cast<std::size_t>(sample.x + dx);
+                const float difference = candidate.luma[index] - sample.value;
+                error += static_cast<double>(difference * difference);
             }
-            const float normalizedError = count == 0 ? 1.0f : static_cast<float>(error / static_cast<double>(count));
+            const float normalizedError = gridCount == 0 ? 1.0f : static_cast<float>(error / static_cast<double>(gridCount));
             if (normalizedError < bestError) {
                 bestError = normalizedError;
                 best.dx = static_cast<float>(dx);
@@ -201,15 +219,11 @@ AlignmentEstimate estimate_alignment(const NormalizedFrame& reference, const Nor
             const float dx = best.dx + fx;
             const float dy = best.dy + fy;
             double error = 0.0;
-            std::uint64_t count = 0;
-            for (int y = margin; y + margin < static_cast<int>(reference.height); y += stride) {
-                for (int x = margin; x + margin < static_cast<int>(reference.width); x += stride) {
-                    const float difference = luma_sample(candidate, static_cast<float>(x) + dx, static_cast<float>(y) + dy) - luma_sample(reference, static_cast<float>(x), static_cast<float>(y));
-                    error += static_cast<double>(difference * difference);
-                    ++count;
-                }
+            for (const LumaSample& sample : grid) {
+                const float difference = luma_sample(candidate, static_cast<float>(sample.x) + dx, static_cast<float>(sample.y) + dy) - sample.value;
+                error += static_cast<double>(difference * difference);
             }
-            const float normalizedError = count == 0 ? 1.0f : static_cast<float>(error / static_cast<double>(count));
+            const float normalizedError = gridCount == 0 ? 1.0f : static_cast<float>(error / static_cast<double>(gridCount));
             if (normalizedError < refinedError) {
                 refinedError = normalizedError;
                 best.dx = dx;
@@ -556,13 +570,15 @@ ProcessResult process_burst(const std::vector<RawFrame>& frames, const TuningPro
     const float readNoise = interpolate_iso(profile, normalized[0].metadata.iso, &IsoPoint::readNoise);
     const float shotCoefficient = interpolate_iso(profile, normalized[0].metadata.iso, &IsoPoint::shotCoefficient);
 
+    std::vector<float> samples;
+    std::vector<float> weights;
+    samples.reserve(accepted);
+    weights.reserve(accepted);
     for (std::uint32_t y = 0; y < height; ++y) {
         for (std::uint32_t x = 0; x < width; ++x) {
             const float reference = raw_value(normalized[0], static_cast<int>(x), static_cast<int>(y));
-            std::vector<float> samples;
-            std::vector<float> weights;
-            samples.reserve(accepted);
-            weights.reserve(accepted);
+            samples.clear();
+            weights.clear();
             float firstEstimate = 0.0f;
             float firstWeight = 0.0f;
             bool hasUnsaturated = false;
