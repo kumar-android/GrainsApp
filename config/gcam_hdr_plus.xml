@@ -1,10 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <gcamEmulationProfile name="HDR+" profileVersion="1" sensorTarget="runtime Bayer sensor" engineMinimumVersion="0.1.0">
   <sensor wbR="2.0" wbG="1.0" wbB="1.55" cameraMatrix="1.55,-0.32,-0.23,-0.12,1.22,-0.10,-0.08,-0.25,1.33" />
-  <burst targetFrames="10" maxFrames="12" motionThreshold="0.045" alignmentThreshold="0.13" />
+  <burst targetFrames="10" maxFrames="32" motionThreshold="0.045" alignmentThreshold="0.13" />
   <merge huberK="1.35" outlierRejection="0.30" edgeProtection="0.90" />
   <superResolution enabled="true" strength="0.18" regularization="0.12" />
-  <denoise luma="0.020" chroma="0.085" textureProtection="0.92" />
+  <denoise luma="0.65" chroma="0.085" textureProtection="0.92" />
   <tone exposure="0.0" blackPoint="0.0" shadow="0.14" midtone="1.01" highlight="0.82" shoulder="0.30" localContrast="0.025" />
   <detail microcontrast="0.035" fineSharpen="0.08" threshold="0.040" haloProtection="0.94" />
+  <isoCurve>
+    <point iso="32" readNoise="0.0025" shotCoefficient="0.012" chromaDenoise="0.035" />
+    <point iso="100" readNoise="0.0040" shotCoefficient="0.020" chromaDenoise="0.050" />
+    <point iso="400" readNoise="0.0070" shotCoefficient="0.034" chromaDenoise="0.075" />
+    <point iso="800" readNoise="0.0110" shotCoefficient="0.050" chromaDenoise="0.100" />
+    <point iso="1600" readNoise="0.0180" shotCoefficient="0.075" chromaDenoise="0.135" />
+  </isoCurve>
 </gcamEmulationProfile>

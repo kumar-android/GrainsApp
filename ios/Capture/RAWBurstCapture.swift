@@ -42,9 +42,11 @@ final class RAWBurstCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchecked
     private var processingMaxDimension: Int?
     private var activeRequestID: Int64?
     private var receivedRAW = false
-    private let maximumBurstFrames = 8
+    private let maximumBurstFrames = 32
     private let minimumBurstFrames = 2
-    private let burstMemoryBudget = UInt64(384 * 1024 * 1024)
+    // A 32-frame burst of 12 MP RAW is about 780 MiB, so the ceiling has to move
+    // with the frame ceiling; physicalMemory/8 still caps it on smaller devices.
+    private let burstMemoryBudget = UInt64(800 * 1024 * 1024)
     // AVFoundation can end a request without any delegate callback when the
     // session is interrupted (device lock, call, thermal shutdown). Bounding each
     // request keeps the shutter from staying stuck in "Capturing" forever.

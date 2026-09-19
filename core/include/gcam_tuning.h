@@ -32,7 +32,7 @@ struct TuningProfile {
     float outlierRejection = 0.35f;
     float edgeProtection = 0.85f;
     float chromaDenoise = 0.06f;
-    float lumaDenoise = 0.015f;
+    float lumaDenoise = 0.35f;
     float textureProtection = 0.90f;
 
     std::array<float, 9> cameraColorMatrix = {

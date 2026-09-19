@@ -64,6 +64,8 @@ On a physical RAW-capable iPhone:
    shown. A late callback must not complete or fail a new burst.
 5. Try Full RAW export and verify the full-resolution frames in the app's
    Documents directory. On a device without Bayer RAW, verify a readable error.
+6. Step the frame picker through its options (`4` to `32`) and confirm the result
+   summary reports the resolution and how many frames actually merged.
 
 Two further invariants keep capture recoverable on real hardware:
 
@@ -76,11 +78,15 @@ Two further invariants keep capture recoverable on real hardware:
    fails with an error instead of leaving the shutter stuck in "Capturing".
 
 The on-device preview path also depends on the portable engine staying affordable at
-full sensor resolution, so alignment gathers the reference luma plane once and the
-merge and normalizer reuse their scratch buffers. A natural capture keeps every frame
-at the sensor resolution and drops trailing frames when the working-set budget cannot
-hold them all; a result that reports fewer merged frames than it captured is expected
-on smaller devices. Keep the core equivalence test running when the engine changes:
+full sensor resolution, so each frame is packed into one 16-bit plane as it is added,
+alignment builds luma on demand, and the merge reuses its scratch buffers. A capture
+keeps every frame at the sensor resolution and drops trailing frames when the
+working-set budget cannot hold them all; a result that reports fewer merged frames
+than it captured is expected, and at 12 MP the 32-frame setting is usually the one
+that gets bounded. The requested count is a ceiling, not a promise: `RAWBurstCapture`
+caps the burst at `physicalMemory / 8`, and `GCamProcessor` then merges what fits.
+
+Keep the core equivalence test running when the engine changes:
 process a generated burst with `config/gcam_natural.xml` and
 `config/gcam_high_detail.xml` before and after a change and compare the output PPM
 hashes. A 4032x3024 burst exercises the full-resolution path that a device uses.

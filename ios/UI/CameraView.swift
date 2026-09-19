@@ -45,6 +45,27 @@ struct CameraView: View {
                     .foregroundStyle(.white.opacity(0.72))
             }
             Spacer()
+            Menu {
+                ForEach(CameraController.mergeFrameOptions, id: \.self) { count in
+                    Button {
+                        controller.mergeFrameCount = count
+                    } label: {
+                        if controller.mergeFrameCount == count {
+                            Label("\(count) frames", systemImage: "checkmark")
+                        } else {
+                            Text("\(count) frames")
+                        }
+                    }
+                }
+            } label: {
+                Label("\(controller.mergeFrameCount) frames", systemImage: "square.stack.3d.down.right")
+                    .font(.caption.weight(.bold))
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 7)
+                    .background(.black.opacity(0.42), in: Capsule())
+            }
+            .disabled(!canCapture)
+            .accessibilityLabel("Merge frames")
             Label("RAW", systemImage: "camera.aperture")
                 .font(.caption.weight(.bold))
                 .padding(.horizontal, 11)

@@ -8,11 +8,12 @@ final class GCamProcessor {
     // back into a single decimated RAW frame.
     private static let maximumWorkingSet = UInt64(1_200_000_000)
     private static let minimumProcessedFrames = 2
-    // Peak bytes per working pixel per frame: the engine holds a 16-bit copy of the
-    // RAW (2) plus the normalized linear and luma planes (4 + 4). The merged planes
-    // and the RGB render add a frame-independent 20 bytes per working pixel.
-    private static let bytesPerWorkingPixelPerFrame = UInt64(10)
-    private static let fixedBytesPerWorkingPixel = UInt64(20)
+    // Peak bytes per working pixel per frame: the engine packs each RAW into one
+    // normalized 16-bit plane (2). The captured frames are counted separately by
+    // `sourceBytes`. The merged plane, the alignment luma scratch, and the render
+    // copies the denoise and detail stages hold add a frame-independent 32.
+    private static let bytesPerWorkingPixelPerFrame = UInt64(2)
+    private static let fixedBytesPerWorkingPixel = UInt64(32)
     private let engine: OpaquePointer
 
     init() throws {

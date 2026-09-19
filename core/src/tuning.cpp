@@ -185,6 +185,7 @@ TuningProfile load_tuning_profile(const std::string& path) {
     validate_range("alignmentThreshold", profile.alignmentThreshold, 0.001f, 10.0f);
     validate_range("outlierRejection", profile.outlierRejection, 0.01f, 2.0f);
     validate_range("chromaDenoise", profile.chromaDenoise, 0.0f, 0.75f);
+    validate_range("lumaDenoise", profile.lumaDenoise, 0.0f, 1.0f);
     validate_range("fineSharpen", profile.fineSharpen, 0.0f, 0.75f);
     validate_range("haloProtection", profile.haloProtection, 0.0f, 1.0f);
     return profile;

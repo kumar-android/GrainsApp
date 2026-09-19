@@ -31,20 +31,56 @@ bool in_bounds(std::uint32_t width, std::uint32_t height, int x, int y) {
     return x >= 0 && y >= 0 && x < static_cast<int>(width) && y < static_cast<int>(height);
 }
 
+// The merged plane: one normalized [0,1] sample per sensel, in float because the
+// merge accumulates into it.
 struct NormalizedFrame {
     RawMetadata metadata;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::vector<float> linear;
-    std::vector<float> luma;
 };
+
+constexpr float kNormalizedScale = 65535.0f;
 
 float raw_value(const NormalizedFrame& frame, int x, int y) {
     if (!in_bounds(frame.width, frame.height, x, y)) return 0.0f;
     return frame.linear[static_cast<std::size_t>(y) * frame.width + static_cast<std::size_t>(x)];
 }
 
-float sample_bilinear(const std::vector<float>& pixels, std::uint32_t width, std::uint32_t height, float x, float y) {
+float packed_value(const PackedFrame& frame, int x, int y) {
+    if (!in_bounds(frame.width, frame.height, x, y)) return 0.0f;
+    return static_cast<float>(frame.samples[static_cast<std::size_t>(y) * frame.width + static_cast<std::size_t>(x)]) / kNormalizedScale;
+}
+
+// Alignment reads luma, and a full float plane per frame would double a burst that
+// is already storing 16-bit planes for every frame. Rebuilding luma on demand costs
+// one cheap pass per frame and keeps the burst footprint at two bytes per pixel.
+std::vector<float> packed_luma(const PackedFrame& frame) {
+    std::vector<float> luma(frame.samples.size(), 0.0f);
+    for (std::uint32_t y = 0; y < frame.height; ++y) {
+        for (std::uint32_t x = 0; x < frame.width; ++x) {
+            if (bayer_channel(frame.metadata.bayer, x, y) == PixelChannel::Green) {
+                luma[static_cast<std::size_t>(y) * frame.width + x] = packed_value(frame, static_cast<int>(x), static_cast<int>(y));
+            } else {
+                float sum = 0.0f;
+                int count = 0;
+                for (const auto offset : {std::pair<int, int>{-1, 0}, {1, 0}, {0, -1}, {0, 1}}) {
+                    const int nx = static_cast<int>(x) + offset.first;
+                    const int ny = static_cast<int>(y) + offset.second;
+                    if (in_bounds(frame.width, frame.height, nx, ny) && bayer_channel(frame.metadata.bayer, static_cast<std::uint32_t>(nx), static_cast<std::uint32_t>(ny)) == PixelChannel::Green) {
+                        sum += packed_value(frame, nx, ny);
+                        ++count;
+                    }
+                }
+                luma[static_cast<std::size_t>(y) * frame.width + x] = count > 0 ? sum / static_cast<float>(count) : packed_value(frame, static_cast<int>(x), static_cast<int>(y));
+            }
+        }
+    }
+    return luma;
+}
+
+template <typename Plane>
+float sample_bilinear_scaled(const Plane& pixels, float scale, std::uint32_t width, std::uint32_t height, float x, float y) {
     if (width == 0 || height == 0) return 0.0f;
     x = std::max(0.0f, std::min(static_cast<float>(width - 1U), x));
     y = std::max(0.0f, std::min(static_cast<float>(height - 1U), y));
@@ -55,11 +91,19 @@ float sample_bilinear(const std::vector<float>& pixels, std::uint32_t width, std
     const float tx = x - static_cast<float>(x0);
     const float ty = y - static_cast<float>(y0);
     auto at = [&](int px, int py) {
-        return pixels[static_cast<std::size_t>(py) * width + static_cast<std::size_t>(px)];
+        return static_cast<float>(pixels[static_cast<std::size_t>(py) * width + static_cast<std::size_t>(px)]) * scale;
     };
     const float top = at(x0, y0) * (1.0f - tx) + at(x1, y0) * tx;
     const float bottom = at(x0, y1) * (1.0f - tx) + at(x1, y1) * tx;
     return top * (1.0f - ty) + bottom * ty;
+}
+
+float sample_bilinear(const std::vector<float>& pixels, std::uint32_t width, std::uint32_t height, float x, float y) {
+    return sample_bilinear_scaled(pixels, 1.0f, width, height, x, y);
+}
+
+float sample_bilinear(const std::vector<std::uint16_t>& pixels, std::uint32_t width, std::uint32_t height, float x, float y) {
+    return sample_bilinear_scaled(pixels, 1.0f / kNormalizedScale, width, height, x, y);
 }
 
 std::array<float, 3> usable_white_balance(const RawFrame& frame, const TuningProfile& profile) {
@@ -68,100 +112,15 @@ std::array<float, 3> usable_white_balance(const RawFrame& frame, const TuningPro
     return profile.fallbackWhiteBalance;
 }
 
-NormalizedFrame normalize_raw(const RawFrame& raw, const TuningProfile& profile, const std::array<float, 3>& burstWb) {
-    if (!raw.valid()) throw std::invalid_argument("RAW frame failed validation");
-    NormalizedFrame frame;
-    frame.metadata = raw.metadata;
-    frame.width = raw.metadata.width;
-    frame.height = raw.metadata.height;
-    frame.linear.assign(static_cast<std::size_t>(frame.width) * frame.height, 0.0f);
 
-    const float black = raw.metadata.blackLevel;
-    const float white = std::max(black + 1.0f, raw.metadata.whiteLevel);
-    const float range = white - black;
-    // Reused across pixels: keeping this allocation out of the per-pixel loop
-    // matters for multi-megapixel bursts on device.
-    std::vector<float> neighbours;
-    neighbours.reserve(4);
-    for (std::uint32_t y = 0; y < frame.height; ++y) {
-        for (std::uint32_t x = 0; x < frame.width; ++x) {
-            float sensor = static_cast<float>(raw.at(x, y));
-
-            // Replace only an isolated CFA outlier whose same-colour neighbours
-            // agree. A bright object therefore remains untouched when its local
-            // same-colour samples are also bright or structurally varied.
-            neighbours.clear();
-            const PixelChannel channel = bayer_channel(raw.metadata.bayer, x, y);
-            for (const auto offset : {std::pair<int, int>{-2, 0}, {2, 0}, {0, -2}, {0, 2}}) {
-                const int nx = static_cast<int>(x) + offset.first;
-                const int ny = static_cast<int>(y) + offset.second;
-                if (in_bounds(frame.width, frame.height, nx, ny) && bayer_channel(raw.metadata.bayer, static_cast<std::uint32_t>(nx), static_cast<std::uint32_t>(ny)) == channel) {
-                    neighbours.push_back(static_cast<float>(raw.at(static_cast<std::uint32_t>(nx), static_cast<std::uint32_t>(ny))));
-                }
-            }
-            if (neighbours.size() >= 3) {
-                std::sort(neighbours.begin(), neighbours.end());
-                const float median = neighbours[neighbours.size() / 2U];
-                const float spread = neighbours.back() - neighbours.front();
-                if (spread < range * 0.08f && std::fabs(sensor - median) > range * 0.18f) {
-                    sensor = median;
-                }
-            }
-
-            float value = clamp01((sensor - black) / range);
-            const std::size_t channelIndex = static_cast<std::size_t>(channel);
-            value *= burstWb[channelIndex] / std::max(0.01f, burstWb[1]);
-
-            // Flat-field correction is deliberately a bounded calibration model.
-            // The default polynomial is identity; profiles may supply measured
-            // radial coefficients rather than an invented correction.
-            const float nx = (2.0f * (static_cast<float>(x) + 0.5f) / static_cast<float>(frame.width)) - 1.0f;
-            const float ny = (2.0f * (static_cast<float>(y) + 0.5f) / static_cast<float>(frame.height)) - 1.0f;
-            const float radius2 = std::min(1.0f, nx * nx + ny * ny);
-            const float radial = profile.lensShadingPolynomial[0] +
-                profile.lensShadingPolynomial[1] * radius2 +
-                profile.lensShadingPolynomial[2] * radius2 * radius2 +
-                profile.lensShadingPolynomial[3] * radius2 * radius2 * radius2;
-            value *= std::max(0.25f, std::min(4.0f, radial));
-            frame.linear[static_cast<std::size_t>(y) * frame.width + x] = clamp01(value);
-        }
-    }
-
-    frame.luma.assign(frame.linear.size(), 0.0f);
-    for (std::uint32_t y = 0; y < frame.height; ++y) {
-        for (std::uint32_t x = 0; x < frame.width; ++x) {
-            if (bayer_channel(frame.metadata.bayer, x, y) == PixelChannel::Green) {
-                frame.luma[static_cast<std::size_t>(y) * frame.width + x] = raw_value(frame, static_cast<int>(x), static_cast<int>(y));
-            } else {
-                float sum = 0.0f;
-                int count = 0;
-                for (const auto offset : {std::pair<int, int>{-1, 0}, {1, 0}, {0, -1}, {0, 1}}) {
-                    const int nxp = static_cast<int>(x) + offset.first;
-                    const int nyp = static_cast<int>(y) + offset.second;
-                    if (in_bounds(frame.width, frame.height, nxp, nyp) && bayer_channel(frame.metadata.bayer, static_cast<std::uint32_t>(nxp), static_cast<std::uint32_t>(nyp)) == PixelChannel::Green) {
-                        sum += raw_value(frame, nxp, nyp);
-                        ++count;
-                    }
-                }
-                frame.luma[static_cast<std::size_t>(y) * frame.width + x] = count > 0 ? sum / static_cast<float>(count) : raw_value(frame, static_cast<int>(x), static_cast<int>(y));
-            }
-        }
-    }
-    return frame;
-}
-
-float luma_sample(const NormalizedFrame& frame, float x, float y) {
-    return sample_bilinear(frame.luma, frame.width, frame.height, x, y);
-}
-
-float gradient_energy(const NormalizedFrame& frame) {
-    if (frame.width < 3 || frame.height < 3) return 0.0f;
+float gradient_energy(const std::vector<float>& luma, std::uint32_t width, std::uint32_t height) {
+    if (width < 3 || height < 3) return 0.0f;
     double sum = 0.0;
     std::uint64_t count = 0;
-    for (std::uint32_t y = 1; y + 1 < frame.height; y += 2) {
-        for (std::uint32_t x = 1; x + 1 < frame.width; x += 2) {
-            const float gx = luma_sample(frame, static_cast<float>(x + 1U), static_cast<float>(y)) - luma_sample(frame, static_cast<float>(x - 1U), static_cast<float>(y));
-            const float gy = luma_sample(frame, static_cast<float>(x), static_cast<float>(y + 1U)) - luma_sample(frame, static_cast<float>(x), static_cast<float>(y - 1U));
+    for (std::uint32_t y = 1; y + 1 < height; y += 2) {
+        for (std::uint32_t x = 1; x + 1 < width; x += 2) {
+            const float gx = sample_bilinear(luma, width, height, static_cast<float>(x + 1U), static_cast<float>(y)) - sample_bilinear(luma, width, height, static_cast<float>(x - 1U), static_cast<float>(y));
+            const float gy = sample_bilinear(luma, width, height, static_cast<float>(x), static_cast<float>(y + 1U)) - sample_bilinear(luma, width, height, static_cast<float>(x), static_cast<float>(y - 1U));
             sum += std::sqrt(gx * gx + gy * gy);
             ++count;
         }
@@ -169,11 +128,11 @@ float gradient_energy(const NormalizedFrame& frame) {
     return count == 0 ? 0.0f : static_cast<float>(sum / static_cast<double>(count));
 }
 
-AlignmentEstimate estimate_alignment(const NormalizedFrame& reference, const NormalizedFrame& candidate, const TuningProfile& profile) {
+AlignmentEstimate estimate_alignment(const std::vector<float>& referenceLuma, const std::vector<float>& candidateLuma, std::uint32_t width, std::uint32_t height, const TuningProfile& profile) {
     AlignmentEstimate best;
     float bestError = std::numeric_limits<float>::max();
     const int searchRadius = 6;
-    const int stride = reference.width > 256 ? 4 : 2;
+    const int stride = width > 256 ? 4 : 2;
     const int margin = searchRadius + 3;
     // The reference samples are identical for every candidate shift, and integer
     // shifts inside the margin never leave the frame, so gathering them once turns
@@ -185,11 +144,11 @@ AlignmentEstimate estimate_alignment(const NormalizedFrame& reference, const Nor
         float value;
     };
     std::vector<LumaSample> grid;
-    grid.reserve((static_cast<std::size_t>(reference.width) / static_cast<std::size_t>(stride) + 1U) *
-        (static_cast<std::size_t>(reference.height) / static_cast<std::size_t>(stride) + 1U));
-    for (int y = margin; y + margin < static_cast<int>(reference.height); y += stride) {
-        for (int x = margin; x + margin < static_cast<int>(reference.width); x += stride) {
-            grid.push_back(LumaSample{x, y, luma_sample(reference, static_cast<float>(x), static_cast<float>(y))});
+    grid.reserve((static_cast<std::size_t>(width) / static_cast<std::size_t>(stride) + 1U) *
+        (static_cast<std::size_t>(height) / static_cast<std::size_t>(stride) + 1U));
+    for (int y = margin; y + margin < static_cast<int>(height); y += stride) {
+        for (int x = margin; x + margin < static_cast<int>(width); x += stride) {
+            grid.push_back(LumaSample{x, y, sample_bilinear(referenceLuma, width, height, static_cast<float>(x), static_cast<float>(y))});
         }
     }
     const std::size_t gridCount = grid.size();
@@ -197,8 +156,8 @@ AlignmentEstimate estimate_alignment(const NormalizedFrame& reference, const Nor
         for (int dx = -searchRadius; dx <= searchRadius; ++dx) {
             double error = 0.0;
             for (const LumaSample& sample : grid) {
-                const std::size_t index = static_cast<std::size_t>(sample.y + dy) * reference.width + static_cast<std::size_t>(sample.x + dx);
-                const float difference = candidate.luma[index] - sample.value;
+                const std::size_t index = static_cast<std::size_t>(sample.y + dy) * width + static_cast<std::size_t>(sample.x + dx);
+                const float difference = candidateLuma[index] - sample.value;
                 error += static_cast<double>(difference * difference);
             }
             const float normalizedError = gridCount == 0 ? 1.0f : static_cast<float>(error / static_cast<double>(gridCount));
@@ -220,7 +179,7 @@ AlignmentEstimate estimate_alignment(const NormalizedFrame& reference, const Nor
             const float dy = best.dy + fy;
             double error = 0.0;
             for (const LumaSample& sample : grid) {
-                const float difference = luma_sample(candidate, static_cast<float>(sample.x) + dx, static_cast<float>(sample.y) + dy) - sample.value;
+                const float difference = sample_bilinear(candidateLuma, width, height, static_cast<float>(sample.x) + dx, static_cast<float>(sample.y) + dy) - sample.value;
                 error += static_cast<double>(difference * difference);
             }
             const float normalizedError = gridCount == 0 ? 1.0f : static_cast<float>(error / static_cast<double>(gridCount));
@@ -238,7 +197,9 @@ AlignmentEstimate estimate_alignment(const NormalizedFrame& reference, const Nor
 }
 
 float robust_weight(float residual, float variance, const TuningProfile& profile) {
-    const float scale = std::sqrt(std::max(1e-6f, variance));
+    // The ISO noise model supplies the scale. `motionThreshold` floors it so that
+    // a low-noise burst is not rejected as outliers by an optimistic model.
+    const float scale = std::max(profile.motionThreshold, std::sqrt(std::max(1e-6f, variance)));
     const float threshold = profile.robustHuberK * scale;
     if (residual <= threshold) return 1.0f;
     return threshold / std::max(threshold, residual);
@@ -386,6 +347,62 @@ void apply_chroma_denoise(RGBImage& image, const TuningProfile& profile, float i
     }
 }
 
+// Chroma denoise leaves luma untouched, so whatever grain survives the merge is
+// exactly what reads as RAW noise. A bilateral pass whose range scale is the
+// post-merge noise model removes that grain in flat areas while the range weight
+// keeps real edges. The scale shrinks as sqrt(frames), so a longer burst is not
+// over-smoothed into plastic.
+void apply_luma_denoise(RGBImage& image, const TuningProfile& profile, float iso, std::uint32_t frameCount) {
+    const float amount = profile.lumaDenoise;
+    if (amount <= 0.0f || frameCount == 0 || image.width < 5 || image.height < 5) return;
+    const float readNoise = interpolate_iso(profile, iso, &IsoPoint::readNoise);
+    const float shotCoefficient = interpolate_iso(profile, iso, &IsoPoint::shotCoefficient);
+    const float inverseFrames = 1.0f / static_cast<float>(frameCount);
+    RGBImage copy = image;
+    auto luma = [&](const RGBImage& source, int x, int y) {
+        if (!in_bounds(source.width, source.height, x, y)) return 0.0f;
+        return 0.2126f * source.at(static_cast<std::uint32_t>(x), static_cast<std::uint32_t>(y), PixelChannel::Red) +
+            0.7152f * source.at(static_cast<std::uint32_t>(x), static_cast<std::uint32_t>(y), PixelChannel::Green) +
+            0.0722f * source.at(static_cast<std::uint32_t>(x), static_cast<std::uint32_t>(y), PixelChannel::Blue);
+    };
+    for (std::uint32_t y = 2; y + 2 < image.height; ++y) {
+        for (std::uint32_t x = 2; x + 2 < image.width; ++x) {
+            const int cx = static_cast<int>(x);
+            const int cy = static_cast<int>(y);
+            const float center = luma(copy, cx, cy);
+            // The merge averages the sensor noise model down by the frame count.
+            const float variance = (readNoise * readNoise + shotCoefficient * std::max(0.0f, center)) * inverseFrames;
+            const float sigma = std::sqrt(std::max(1e-10f, variance));
+            const float rangeScale = std::max(1e-4f, 2.0f * sigma);
+            const float inverseRange = 1.0f / (rangeScale * rangeScale);
+            float weighted = 0.0f;
+            float total = 0.0f;
+            for (int dy = -2; dy <= 2; ++dy) {
+                for (int dx = -2; dx <= 2; ++dx) {
+                    const float value = luma(copy, cx + dx, cy + dy);
+                    const float distance = static_cast<float>(dx * dx + dy * dy);
+                    const float difference = value - center;
+                    // A rational range kernel keeps this to one divide per tap; an
+                    // exp() kernel over a whole frame is not affordable on device.
+                    const float weight = (1.0f / (1.0f + 0.25f * distance)) / (1.0f + difference * difference * inverseRange);
+                    weighted += weight * value;
+                    total += weight;
+                }
+            }
+            if (total <= 0.0f) continue;
+            const float edge = std::fabs(luma(copy, cx + 1, cy) - luma(copy, cx - 1, cy)) +
+                std::fabs(luma(copy, cx, cy + 1) - luma(copy, cx, cy - 1));
+            const float structure = 1.0f - profile.textureProtection * smoothstep(rangeScale * 4.0f, rangeScale * 16.0f, edge);
+            // Additive luma correction: it leaves the chroma differences the chroma
+            // pass produced exactly where they are and cannot go negative in shadow.
+            const float delta = (weighted / total - center) * clamp01(amount * structure);
+            image.at(x, y, PixelChannel::Red) = clamp01(image.at(x, y, PixelChannel::Red) + delta);
+            image.at(x, y, PixelChannel::Green) = clamp01(image.at(x, y, PixelChannel::Green) + delta);
+            image.at(x, y, PixelChannel::Blue) = clamp01(image.at(x, y, PixelChannel::Blue) + delta);
+        }
+    }
+}
+
 void apply_tone_and_detail(RGBImage& image, const TuningProfile& profile) {
     for (std::uint32_t y = 0; y < image.height; ++y) {
         for (std::uint32_t x = 0; x < image.width; ++x) {
@@ -457,6 +474,74 @@ std::string escape_json(const std::string& value) {
 
 } // namespace
 
+// A frame is normalized as it is packed, so the engine can hold a whole burst at two
+// bytes per pixel per frame and release the sensor RAW immediately. The packing must
+// use the profile and white balance the merge will run with, so load the tuning profile
+// and take `burst_white_balance` from the first frame before adding any frame.
+PackedFrame pack_frame(const RawFrame& raw, const TuningProfile& profile, const std::array<float, 3>& burstWb) {
+    if (!raw.valid()) throw std::invalid_argument("RAW frame failed validation");
+    PackedFrame frame;
+    frame.metadata = raw.metadata;
+    frame.width = raw.metadata.width;
+    frame.height = raw.metadata.height;
+    frame.samples.assign(static_cast<std::size_t>(frame.width) * frame.height, 0);
+
+    const float black = raw.metadata.blackLevel;
+    const float white = std::max(black + 1.0f, raw.metadata.whiteLevel);
+    const float range = white - black;
+    // Reused across pixels: keeping this allocation out of the per-pixel loop
+    // matters for multi-megapixel bursts on device.
+    std::vector<float> neighbours;
+    neighbours.reserve(4);
+    for (std::uint32_t y = 0; y < frame.height; ++y) {
+        for (std::uint32_t x = 0; x < frame.width; ++x) {
+            float sensor = static_cast<float>(raw.at(x, y));
+
+            // Replace only an isolated CFA outlier whose same-colour neighbours
+            // agree. A bright object therefore remains untouched when its local
+            // same-colour samples are also bright or structurally varied.
+            neighbours.clear();
+            const PixelChannel channel = bayer_channel(raw.metadata.bayer, x, y);
+            for (const auto offset : {std::pair<int, int>{-2, 0}, {2, 0}, {0, -2}, {0, 2}}) {
+                const int nx = static_cast<int>(x) + offset.first;
+                const int ny = static_cast<int>(y) + offset.second;
+                if (in_bounds(frame.width, frame.height, nx, ny) && bayer_channel(raw.metadata.bayer, static_cast<std::uint32_t>(nx), static_cast<std::uint32_t>(ny)) == channel) {
+                    neighbours.push_back(static_cast<float>(raw.at(static_cast<std::uint32_t>(nx), static_cast<std::uint32_t>(ny))));
+                }
+            }
+            if (neighbours.size() >= 3) {
+                std::sort(neighbours.begin(), neighbours.end());
+                const float median = neighbours[neighbours.size() / 2U];
+                const float spread = neighbours.back() - neighbours.front();
+                if (spread < range * 0.08f && std::fabs(sensor - median) > range * 0.18f) {
+                    sensor = median;
+                }
+            }
+
+            float value = clamp01((sensor - black) / range);
+            const std::size_t channelIndex = static_cast<std::size_t>(channel);
+            value *= burstWb[channelIndex] / std::max(0.01f, burstWb[1]);
+
+            // Flat-field correction is deliberately a bounded calibration model.
+            // The default polynomial is identity; profiles may supply measured
+            // radial coefficients rather than an invented correction.
+            const float nx = (2.0f * (static_cast<float>(x) + 0.5f) / static_cast<float>(frame.width)) - 1.0f;
+            const float ny = (2.0f * (static_cast<float>(y) + 0.5f) / static_cast<float>(frame.height)) - 1.0f;
+            const float radius2 = std::min(1.0f, nx * nx + ny * ny);
+            const float radial = profile.lensShadingPolynomial[0] +
+                profile.lensShadingPolynomial[1] * radius2 +
+                profile.lensShadingPolynomial[2] * radius2 * radius2 +
+                profile.lensShadingPolynomial[3] * radius2 * radius2 * radius2;
+            value *= std::max(0.25f, std::min(4.0f, radial));
+            // The merge only needs about 1e-4 of precision, so the normalized frame is
+            // stored in 16 bits instead of two float planes.
+            frame.samples[static_cast<std::size_t>(y) * frame.width + x] = static_cast<std::uint16_t>(std::lround(clamp01(value) * kNormalizedScale));
+        }
+    }
+
+    return frame;
+}
+
 const char* bayer_pattern_name(BayerPattern pattern) noexcept {
     switch (pattern) {
         case BayerPattern::RGGB: return "RGGB";
@@ -510,30 +595,38 @@ std::uint16_t& RawFrame::at(std::uint32_t x, std::uint32_t y) noexcept {
     return pixels[static_cast<std::size_t>(y) * metadata.width + x];
 }
 
-ProcessResult process_burst(const std::vector<RawFrame>& frames, const TuningProfile& profile) {
+std::array<float, 3> burst_white_balance(const RawFrame& reference, const TuningProfile& profile) {
+    return usable_white_balance(reference, profile);
+}
+
+ProcessResult merge_packed_frames(const std::vector<PackedFrame>& frames, const TuningProfile& profile) {
     if (frames.empty()) throw std::invalid_argument("Cannot process an empty RAW burst");
     if (profile.maxFrames == 0) throw std::invalid_argument("RAW burst profile allows no frames");
-    if (!frames.front().valid()) throw std::invalid_argument("RAW burst contains an invalid first frame");
     const auto start = std::chrono::steady_clock::now();
 
-    const std::uint32_t width = frames.front().metadata.width;
-    const std::uint32_t height = frames.front().metadata.height;
+    const std::uint32_t width = frames.front().width;
+    const std::uint32_t height = frames.front().height;
     const std::size_t frameLimit = std::min<std::size_t>(frames.size(), profile.maxFrames);
     for (std::size_t i = 0; i < frameLimit; ++i) {
-        if (!frames[i].valid() || frames[i].metadata.width != width || frames[i].metadata.height != height || frames[i].metadata.bayer != frames.front().metadata.bayer) {
+        const PackedFrame& frame = frames[i];
+        if (frame.width != width || frame.height != height || frame.metadata.bayer != frames.front().metadata.bayer ||
+            frame.samples.size() < static_cast<std::size_t>(width) * height) {
             throw std::invalid_argument("RAW burst frames do not share dimensions and Bayer pattern");
         }
     }
 
-    const std::array<float, 3> burstWb = usable_white_balance(frames.front(), profile);
-    std::vector<NormalizedFrame> normalized;
+    // The burst owns one 16-bit plane per frame, so the merge walks pointers into it
+    // instead of copying frames.
+    std::vector<const PackedFrame*> normalized;
     normalized.reserve(frameLimit);
-    for (std::size_t i = 0; i < frameLimit; ++i) normalized.push_back(normalize_raw(frames[i], profile, burstWb));
+    for (std::size_t i = 0; i < frameLimit; ++i) normalized.push_back(&frames[i]);
 
+    std::vector<float> luma;
     std::size_t referenceIndex = 0;
-    float bestSharpness = gradient_energy(normalized.front());
-    for (std::size_t i = 1; i < normalized.size(); ++i) {
-        const float sharpness = gradient_energy(normalized[i]);
+    float bestSharpness = -1.0f;
+    for (std::size_t i = 0; i < normalized.size(); ++i) {
+        luma = packed_luma(*normalized[i]);
+        const float sharpness = gradient_energy(luma, width, height);
         if (sharpness > bestSharpness) {
             bestSharpness = sharpness;
             referenceIndex = i;
@@ -550,9 +643,14 @@ ProcessResult process_burst(const std::vector<RawFrame>& frames, const TuningPro
     diagnostics.alignments[0].confidence = 1.0f;
     diagnostics.alignments[0].accepted = true;
 
+    const std::vector<float> referenceLuma = packed_luma(*normalized[0]);
     for (std::size_t i = 1; i < normalized.size(); ++i) {
-        diagnostics.alignments[i] = estimate_alignment(normalized[0], normalized[i], profile);
+        luma = packed_luma(*normalized[i]);
+        diagnostics.alignments[i] = estimate_alignment(referenceLuma, luma, width, height, profile);
     }
+    // The scratch plane is dead once every frame is aligned: release it before the
+    // merge allocates its accumulators.
+    std::vector<float>().swap(luma);
 
     std::size_t accepted = 0;
     for (const AlignmentEstimate& alignment : diagnostics.alignments) if (alignment.accepted) ++accepted;
@@ -561,14 +659,14 @@ ProcessResult process_burst(const std::vector<RawFrame>& frames, const TuningPro
     diagnostics.rejectedFrames = diagnostics.inputFrames - diagnostics.acceptedFrames;
 
     NormalizedFrame merged;
-    merged.metadata = normalized[0].metadata;
+    merged.metadata = normalized[0]->metadata;
     merged.width = width;
     merged.height = height;
     merged.linear.assign(static_cast<std::size_t>(width) * height, 0.0f);
     double confidenceSum = 0.0;
     double motionSum = 0.0;
-    const float readNoise = interpolate_iso(profile, normalized[0].metadata.iso, &IsoPoint::readNoise);
-    const float shotCoefficient = interpolate_iso(profile, normalized[0].metadata.iso, &IsoPoint::shotCoefficient);
+    const float readNoise = interpolate_iso(profile, normalized[0]->metadata.iso, &IsoPoint::readNoise);
+    const float shotCoefficient = interpolate_iso(profile, normalized[0]->metadata.iso, &IsoPoint::shotCoefficient);
 
     std::vector<float> samples;
     std::vector<float> weights;
@@ -576,7 +674,6 @@ ProcessResult process_burst(const std::vector<RawFrame>& frames, const TuningPro
     weights.reserve(accepted);
     for (std::uint32_t y = 0; y < height; ++y) {
         for (std::uint32_t x = 0; x < width; ++x) {
-            const float reference = raw_value(normalized[0], static_cast<int>(x), static_cast<int>(y));
             samples.clear();
             weights.clear();
             float firstEstimate = 0.0f;
@@ -585,33 +682,44 @@ ProcessResult process_burst(const std::vector<RawFrame>& frames, const TuningPro
             for (std::size_t i = 0; i < normalized.size(); ++i) {
                 if (!diagnostics.alignments[i].accepted) continue;
                 const AlignmentEstimate& alignment = diagnostics.alignments[i];
-                const float value = sample_bilinear(normalized[i].linear, width, height, static_cast<float>(x) + alignment.dx, static_cast<float>(y) + alignment.dy);
+                const float value = sample_bilinear(normalized[i]->samples, width, height, static_cast<float>(x) + alignment.dx, static_cast<float>(y) + alignment.dy);
                 if (value < 0.995f) hasUnsaturated = true;
                 samples.push_back(value);
                 const float variance = readNoise * readNoise + shotCoefficient * std::max(0.0f, value);
                 float weight = alignment.confidence / std::max(1e-6f, variance);
-                if (std::fabs(value - reference) > profile.motionThreshold) {
-                    weight *= 0.12f;
-                    motionSum += 1.0;
-                }
+                // Comparing each frame against the single noisy reference frame with a
+                // fixed threshold classifies sensor noise as motion in every textured
+                // region, which pins the merge to the reference. The robust reweighting
+                // below rejects real outliers against the merged estimate instead.
                 if (value > 0.995f && hasUnsaturated) weight = 0.0f;
                 weights.push_back(weight);
                 firstEstimate += value * weight;
                 firstWeight += weight;
             }
             if (samples.empty()) continue;
-            const float initial = firstWeight > 0.0f ? firstEstimate / firstWeight : reference;
+            const float initial = firstWeight > 0.0f
+                ? firstEstimate / firstWeight
+                : sample_bilinear(normalized[0]->samples, width, height, static_cast<float>(x), static_cast<float>(y));
             float estimate = initial;
-            for (int iteration = 0; iteration < 2; ++iteration) {
+            const int iterations = 2;
+            for (int iteration = 0; iteration < iterations; ++iteration) {
                 float weighted = 0.0f;
                 float total = 0.0f;
+                float outliers = 0.0f;
+                const bool lastIteration = iteration + 1 == iterations;
                 for (std::size_t i = 0; i < samples.size(); ++i) {
                     const float variance = readNoise * readNoise + shotCoefficient * std::max(0.0f, samples[i]);
-                    const float weight = weights[i] * robust_weight(std::fabs(samples[i] - estimate), variance, profile);
+                    const float robust = robust_weight(std::fabs(samples[i] - estimate), variance, profile);
+                    const float weight = weights[i] * robust;
                     weighted += samples[i] * weight;
                     total += weight;
+                    // A sample the robust weighting cuts in half disagrees with the merge
+                    // far beyond the noise model, so it is the burst's real motion rather
+                    // than sensor grain.
+                    if (lastIteration && weights[i] > 0.0f && robust < 0.5f) outliers += 1.0;
                 }
                 if (total > 0.0f) estimate = weighted / total;
+                if (lastIteration) motionSum += outliers;
             }
             merged.linear[static_cast<std::size_t>(y) * width + x] = clamp01(estimate);
             confidenceSum += firstWeight > 0.0f ? std::min(1.0f, firstWeight * readNoise * readNoise) : 0.0;
@@ -636,7 +744,7 @@ ProcessResult process_burst(const std::vector<RawFrame>& frames, const TuningPro
                     for (std::size_t i = 1; i < normalized.size(); ++i) {
                         if (!diagnostics.alignments[i].accepted) continue;
                         const auto& alignment = diagnostics.alignments[i];
-                        const float observation = sample_bilinear(normalized[i].linear, width, height, static_cast<float>(x) + alignment.dx, static_cast<float>(y) + alignment.dy);
+                        const float observation = sample_bilinear(normalized[i]->samples, width, height, static_cast<float>(x) + alignment.dx, static_cast<float>(y) + alignment.dy);
                         const float localGradient = std::fabs(raw_value(merged, static_cast<int>(x) + 1, static_cast<int>(y)) - raw_value(merged, static_cast<int>(x) - 1, static_cast<int>(y))) +
                             std::fabs(raw_value(merged, static_cast<int>(x), static_cast<int>(y) + 1) - raw_value(merged, static_cast<int>(x), static_cast<int>(y) - 1));
                         const float weight = alignment.confidence * (1.0f - profile.subpixelRegularization * smoothstep(0.20f, 0.8f, localGradient));
@@ -651,6 +759,7 @@ ProcessResult process_burst(const std::vector<RawFrame>& frames, const TuningPro
 
     RGBImage output = demosaic(merged);
     apply_camera_color(output, profile);
+    apply_luma_denoise(output, profile, merged.metadata.iso, diagnostics.acceptedFrames);
     apply_chroma_denoise(output, profile, merged.metadata.iso);
     apply_tone_and_detail(output, profile);
 
@@ -666,8 +775,36 @@ ProcessResult process_burst(const std::vector<RawFrame>& frames, const TuningPro
         diagnostics.meanAlignmentConfidence /= static_cast<float>(diagnostics.alignments.size());
         diagnostics.meanAlignmentResidual /= static_cast<float>(diagnostics.alignments.size());
     }
-    diagnostics.peakMemoryMiB = static_cast<float>((normalized.size() * width * height * sizeof(float) * 2ULL + output.pixels.size() * sizeof(float)) / (1024.0 * 1024.0));
+    // One packed 16-bit plane per frame, plus the two float luma planes, the merged
+    // plane, and the full-frame render copies the denoise and detail stages keep
+    // while they read their neighbours. Those stages run in sequence, so the largest
+    // of them sets the working set rather than the sum.
+    const double packedBytes = static_cast<double>(normalized.size()) * width * height * sizeof(std::uint16_t);
+    const double workingBytes = static_cast<double>(width) * height * sizeof(float) * 9.0;
+    diagnostics.peakMemoryMiB = static_cast<float>((packedBytes + workingBytes) / (1024.0 * 1024.0));
     return {std::move(output), std::move(diagnostics)};
+}
+
+ProcessResult process_burst(const std::vector<RawFrame>& frames, const TuningProfile& profile) {
+    if (frames.empty()) throw std::invalid_argument("Cannot process an empty RAW burst");
+    if (profile.maxFrames == 0) throw std::invalid_argument("RAW burst profile allows no frames");
+    if (!frames.front().valid()) throw std::invalid_argument("RAW burst contains an invalid first frame");
+    const std::uint32_t width = frames.front().metadata.width;
+    const std::uint32_t height = frames.front().metadata.height;
+    const std::size_t frameLimit = std::min<std::size_t>(frames.size(), profile.maxFrames);
+    for (std::size_t i = 0; i < frameLimit; ++i) {
+        if (!frames[i].valid() || frames[i].metadata.width != width || frames[i].metadata.height != height || frames[i].metadata.bayer != frames.front().metadata.bayer) {
+            throw std::invalid_argument("RAW burst frames do not share dimensions and Bayer pattern");
+        }
+    }
+
+    // In-memory convenience path. The engines pack frames as they arrive instead, so
+    // they never hold the sensor RAW for the whole burst.
+    const std::array<float, 3> burstWb = burst_white_balance(frames.front(), profile);
+    std::vector<PackedFrame> packed;
+    packed.reserve(frameLimit);
+    for (std::size_t i = 0; i < frameLimit; ++i) packed.push_back(pack_frame(frames[i], profile, burstWb));
+    return merge_packed_frames(packed, profile);
 }
 
 std::string diagnostics_json(const ProcessingDiagnostics& diagnostics) {

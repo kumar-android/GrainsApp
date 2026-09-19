@@ -3,6 +3,7 @@
 #include "gcam_engine.h"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <exception>
 #include <stdexcept>
@@ -11,7 +12,10 @@
 
 struct GcamEngine {
     gcam::TuningProfile profile = gcam::default_tuning_profile();
-    std::vector<gcam::RawFrame> frames;
+    // Frames are packed as they arrive: the engine keeps a 16-bit normalized plane
+    // per frame instead of the sensor RAW, so a 32-frame burst stays affordable.
+    std::vector<gcam::PackedFrame> frames;
+    std::array<float, 3> burstWhiteBalance = {1.0f, 1.0f, 1.0f};
     gcam::ProcessResult result;
     bool hasResult = false;
     std::string lastError;
@@ -73,6 +77,7 @@ extern "C" int gcam_begin_burst(GcamEngine* engine, char* error_buffer, uint32_t
     }
     engine->frames.clear();
     engine->hasResult = false;
+    engine->burstWhiteBalance = {1.0f, 1.0f, 1.0f};
     return success(error_buffer, error_buffer_size);
 }
 
@@ -110,7 +115,10 @@ extern "C" int gcam_add_raw_frame(GcamEngine* engine, const GcamRawFrameView* vi
         frame.metadata.optionalMetadata = safe_string(view->optional_metadata);
         frame.pixels.assign(view->pixels, view->pixels + expectedPixels);
         if (!frame.valid()) throw std::invalid_argument("gcam_add_raw_frame: frame metadata failed validation");
-        engine->frames.push_back(std::move(frame));
+        // The white balance for the whole burst comes from its first frame, so the
+        // profile must already be loaded when the first frame is added.
+        if (engine->frames.empty()) engine->burstWhiteBalance = gcam::burst_white_balance(frame, engine->profile);
+        engine->frames.push_back(gcam::pack_frame(frame, engine->profile, engine->burstWhiteBalance));
         return success(error_buffer, error_buffer_size);
     } catch (const std::exception& error) {
         return fail(engine, error, error_buffer, error_buffer_size);
@@ -123,7 +131,7 @@ extern "C" int gcam_process_burst(GcamEngine* engine, char* error_buffer, uint32
         return fail(engine, error, error_buffer, error_buffer_size);
     }
     try {
-        engine->result = gcam::process_burst(engine->frames, engine->profile);
+        engine->result = gcam::merge_packed_frames(engine->frames, engine->profile);
         engine->hasResult = true;
         return success(error_buffer, error_buffer_size);
     } catch (const std::exception& error) {

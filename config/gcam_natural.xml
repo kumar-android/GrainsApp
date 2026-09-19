@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <gcamEmulationProfile name="Natural" profileVersion="1" sensorTarget="runtime Bayer sensor" engineMinimumVersion="0.1.0">
   <sensor wbR="2.0" wbG="1.0" wbB="1.55" cameraMatrix="1.55,-0.32,-0.23,-0.12,1.22,-0.10,-0.08,-0.25,1.33" lensRadial0="1.0" lensRadial1="0.0" lensRadial2="0.0" lensRadial3="0.0" />
-  <burst targetFrames="8" maxFrames="12" motionThreshold="0.055" alignmentThreshold="0.12" />
+  <burst targetFrames="12" maxFrames="32" motionThreshold="0.055" alignmentThreshold="0.12" />
   <merge huberK="1.5" outlierRejection="0.35" edgeProtection="0.85" />
   <superResolution enabled="true" strength="0.22" regularization="0.10" />
-  <denoise luma="0.015" chroma="0.06" textureProtection="0.90" />
+  <denoise luma="0.85" chroma="0.06" textureProtection="0.90" />
   <tone exposure="0.0" blackPoint="0.0" shadow="0.10" midtone="1.02" highlight="0.72" shoulder="0.24" localContrast="0.035" />
   <detail microcontrast="0.045" fineSharpen="0.10" threshold="0.035" haloProtection="0.90" />
   <color saturation="1.0" vibrance="1.0" temperature="0.0" />

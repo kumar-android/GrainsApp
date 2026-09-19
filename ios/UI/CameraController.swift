@@ -9,6 +9,10 @@ final class CameraController: ObservableObject {
     @Published private(set) var diagnostics = ""
     @Published private(set) var resultJPEG: Data?
     @Published private(set) var resultSummary = ""
+    // The merge count the next burst asks for. Capture and processing both bound it
+    // by what fits in memory, so the result summary reports how many frames merged.
+    static let mergeFrameOptions = [4, 8, 12, 16, 24, 32]
+    @Published var mergeFrameCount = 12
     @Published private(set) var isReady = false
 
     private let capture = RAWBurstCapture()
@@ -73,7 +77,7 @@ final class CameraController: ObservableObject {
                 // Capture keeps the full sensor resolution. Reducing the RAW here
                 // would cap the merged result at half the linear resolution and
                 // remove the sub-pixel frame differences the engine aligns on.
-                let frames = try await capture.captureBurst(count: 8)
+                let frames = try await capture.captureBurst(count: mergeFrameCount)
                 try Task.checkCancellation()
                 state = .collecting
                 guard let profilePath = Bundle.main.path(forResource: "gcam_natural", ofType: "xml") else {
@@ -113,7 +117,7 @@ final class CameraController: ObservableObject {
             guard let self else { return }
             do {
                 state = .capturing
-                let frames = try await capture.captureBurst(count: 8)
+                let frames = try await capture.captureBurst(count: mergeFrameCount)
                 try Task.checkCancellation()
                 state = .saving
                 let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
