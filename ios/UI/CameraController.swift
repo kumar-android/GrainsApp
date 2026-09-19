@@ -19,20 +19,26 @@ final class CameraController: ObservableObject {
     init() {}
 
     func startPreview() {
-        guard !isReady else { capture.start(); return }
+        guard !isReady else { return }
         previewTask?.cancel()
         previewTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            guard await AVCaptureDevice.requestAccess(for: .video) else {
+            let authorized = await AVCaptureDevice.requestAccess(for: .video)
+            guard !Task.isCancelled else { return }
+            guard authorized else {
                 lastError = "Camera access was not granted"
                 state = .failed
                 return
             }
             do {
-                try capture.configure()
+                try await capture.start()
+                try Task.checkCancellation()
                 isReady = true
-                capture.start()
+                lastError = ""
+                if state == .failed { state = .idle }
             } catch {
+                guard !Task.isCancelled else { return }
+                isReady = false
                 lastError = error.localizedDescription
                 state = .failed
             }
@@ -40,6 +46,7 @@ final class CameraController: ObservableObject {
     }
 
     func stopPreview() {
+        isReady = false
         previewTask?.cancel()
         operationTask?.cancel()
         capture.stop()
@@ -48,7 +55,8 @@ final class CameraController: ObservableObject {
     func reset() {
         guard state == .failed else { return }
         lastError = ""
-        state = isReady ? .idle : .failed
+        isReady = false
+        state = .idle
     }
 
     func captureNaturalBurst() {
@@ -61,6 +69,7 @@ final class CameraController: ObservableObject {
             do {
                 state = .capturing
                 let frames = try await capture.captureBurst(count: 8, maxDimension: 2048)
+                try Task.checkCancellation()
                 state = .collecting
                 guard let profilePath = Bundle.main.path(forResource: "gcam_natural", ofType: "xml") else {
                     throw NSError(domain: "GCamCamera", code: 26, userInfo: [NSLocalizedDescriptionKey: "The bundled tuning profile is missing"])
@@ -73,7 +82,11 @@ final class CameraController: ObservableObject {
                 try Task.checkCancellation()
                 diagnostics = processed.diagnostics
                 state = .rendering
-                resultJPEG = try ProcessedImageEncoder.jpeg(width: processed.width, height: processed.height, linearRGB: processed.rgb)
+                let jpeg = try await Task.detached(priority: .userInitiated) {
+                    try ProcessedImageEncoder.jpeg(width: processed.width, height: processed.height, linearRGB: processed.rgb)
+                }.value
+                try Task.checkCancellation()
+                resultJPEG = jpeg
                 state = .saving
                 if let resultJPEG { try await PhotosExporter.saveJPEG(resultJPEG) }
                 state = .idle
@@ -95,6 +108,7 @@ final class CameraController: ObservableObject {
             do {
                 state = .capturing
                 let frames = try await capture.captureBurst(count: 8)
+                try Task.checkCancellation()
                 state = .saving
                 let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("GCamRAW_\(Int(Date().timeIntervalSince1970))")
                 try await Task.detached(priority: .utility) {

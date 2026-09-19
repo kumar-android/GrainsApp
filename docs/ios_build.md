@@ -23,8 +23,37 @@ For tests:
 
 ```bash
 xcodebuild -project ios_app/GCamCameraApp.xcodeproj \
-  -scheme GCamCameraAppTests \
+  -scheme GCamCameraApp \
   -destination 'platform=iOS Simulator,name=iPhone 16 Pro' test
 ```
 
 The app's Capture preview action renders a memory-bounded on-device result from the RAW burst. The RAW debug path saves the original full-resolution sequence of `GCAMRAW1` frames and a manifest so the same burst can be processed by `gcam_cli` on Windows. Final HEIF/JPEG saving is an iOS Photos concern and is not used as a substitute for the full-resolution RAW path.
+
+## Capture crash regression checks
+
+Bayer RAW requests must use `AVCapturePhotoOutput.QualityPrioritization.speed`.
+Using `.quality` raises `NSInvalidArgumentException` at
+`capturePhoto(with:delegate:)`; Swift's `do/catch` cannot catch that exception.
+The output and each request now use `.speed`. See Apple's
+[capture request rules](https://developer.apple.com/documentation/avfoundation/avcapturephotooutput/capturephoto(with:delegate:)).
+
+The shared `GCamCameraApp` scheme includes the XCTest target. The macOS CI
+workflow runs its simulator tests as well as the unsigned device build. Tests
+cover RAW request settings, Bayer phase preservation, padded rows, CFA detection
+without DNG metadata, and invalid RAW levels. These checks need Xcode; the Windows
+CMake tests exercise only the portable C++ engine.
+
+On a physical RAW-capable iPhone:
+
+1. Launch, allow camera access, and wait until the shutter is enabled.
+2. Capture a photo and verify that processing finishes, the result has plausible
+   colors, and the JPEG appears in Photos after granting write access.
+3. Repeat several captures and rapid taps; only one burst should be active.
+4. Interrupt capture by locking the phone, then unlock and retry if an error is
+   shown. A late callback must not complete or fail a new burst.
+5. Try Full RAW export and verify the full-resolution frames in the app's
+   Documents directory. On a device without Bayer RAW, verify a readable error.
+
+If a device still closes the app, retain the Xcode exception/backtrace (or iOS
+JetsamEvent if it was killed for memory), the device/iOS version, and whether the
+failure happened at the shutter or later in processing.

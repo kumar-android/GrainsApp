@@ -23,7 +23,7 @@ final class GCamProcessor {
         let loaded = profilePath.withCString { gcam_load_profile(engine, $0, &error, UInt32(error.count)) }
         guard loaded != 0 else { throw NSError(domain: "GCamCamera", code: 21, userInfo: [NSLocalizedDescriptionKey: String(cString: error)]) }
         guard gcam_begin_burst(engine, &error, UInt32(error.count)) != 0 else { throw NSError(domain: "GCamCamera", code: 22, userInfo: [NSLocalizedDescriptionKey: String(cString: error)]) }
-        for (index, frame) in workingFrames.enumerated() {
+        for frame in workingFrames {
             let wb = [frame.metadata.whiteBalance.0, frame.metadata.whiteBalance.1, frame.metadata.whiteBalance.2]
             let added = frame.metadata.lensIdentifier.withCString { lens in
                 frame.metadata.sensorIdentifier.withCString { sensor in
@@ -51,26 +51,24 @@ final class GCamProcessor {
             throw NSError(domain: "GCamCamera", code: 27, userInfo: [NSLocalizedDescriptionKey: "Cannot process an empty RAW burst"])
         }
         for frame in frames {
-            guard frame.metadata.width == first.metadata.width,
+            let width = Int(frame.metadata.width)
+            let height = Int(frame.metadata.height)
+            let (pixelCount, overflow) = width.multipliedReportingOverflow(by: height)
+            guard width >= 2, height >= 2, !overflow,
+                  pixelCount <= frame.pixels.count, frame.pixels.count <= Int(UInt32.max),
+                  frame.metadata.width == first.metadata.width,
                   frame.metadata.height == first.metadata.height,
                   frame.metadata.bayerPattern == first.metadata.bayerPattern else {
-                throw NSError(domain: "GCamCamera", code: 28, userInfo: [NSLocalizedDescriptionKey: "RAW burst frames do not share dimensions and Bayer pattern"])
+                throw NSError(domain: "GCamCamera", code: 28, userInfo: [NSLocalizedDescriptionKey: "RAW burst dimensions, pixel storage, or Bayer patterns are invalid"])
             }
         }
-        let maxDimension = frames.reduce(0) { max($0, max(Int($1.metadata.width), Int($1.metadata.height))) }
-        guard maxDimension > 0 else {
-            throw NSError(domain: "GCamCamera", code: 28, userInfo: [NSLocalizedDescriptionKey: "RAW burst dimensions are invalid"])
-        }
-
-        var scale = max(1, Int(ceil(Double(maxDimension) / Double(maxOnDeviceDimension))))
-        // Bayer phase repeats every two source pixels. Keep an even decimation
-        // factor so the metadata's CFA pattern remains correct.
-        if scale > 1, scale % 2 != 0 { scale += 1 }
+        let sampling = try BayerSampling(width: Int(first.metadata.width), height: Int(first.metadata.height), maxDimension: maxOnDeviceDimension)
+        let scale = sampling.scale
 
         let originalPixels = UInt64(first.metadata.width) * UInt64(first.metadata.height)
         let sourceBytes = originalPixels * UInt64(frames.count) * UInt64(MemoryLayout<UInt16>.size)
-        let workingWidth = (Int(first.metadata.width) + scale - 1) / scale
-        let workingHeight = (Int(first.metadata.height) + scale - 1) / scale
+        let workingWidth = sampling.width
+        let workingHeight = sampling.height
         let workingPixels = UInt64(workingWidth) * UInt64(workingHeight)
         // Account for Swift's source RAW, the C++ RAW copy, the two normalized
         // planes, the merged plane, and the RGB/intermediate render buffers.
@@ -80,20 +78,16 @@ final class GCamProcessor {
             throw NSError(domain: "GCamCamera", code: 29, userInfo: [NSLocalizedDescriptionKey: "This burst is too large for safe on-device processing. Export the full RAW burst and process it with the Windows RAWPACK laboratory."])
         }
 
-        guard scale > 1 else { return (frames, 1) }
-        let reduced = try frames.map { frame -> CapturedRAWFrame in
+        guard sampling.width != Int(first.metadata.width) || sampling.height != Int(first.metadata.height) else { return (frames, 1) }
+        let reduced = frames.map { frame -> CapturedRAWFrame in
             let width = Int(frame.metadata.width)
-            let height = Int(frame.metadata.height)
-            guard width > 0, height > 0, frame.pixels.count >= width * height else {
-                throw NSError(domain: "GCamCamera", code: 28, userInfo: [NSLocalizedDescriptionKey: "RAW burst dimensions or pixel storage are invalid"])
-            }
-            let outputWidth = (width + scale - 1) / scale
-            let outputHeight = (height + scale - 1) / scale
+            let outputWidth = sampling.width
+            let outputHeight = sampling.height
             var pixels = [UInt16](repeating: 0, count: outputWidth * outputHeight)
             for y in 0..<outputHeight {
-                let sourceY = min(y * scale, height - 1)
+                let sourceY = sampling.sourceCoordinate(y)
                 for x in 0..<outputWidth {
-                    let sourceX = min(x * scale, width - 1)
+                    let sourceX = sampling.sourceCoordinate(x)
                     pixels[y * outputWidth + x] = frame.pixels[sourceY * width + sourceX]
                 }
             }
