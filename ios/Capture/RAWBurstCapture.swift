@@ -182,9 +182,20 @@ final class RAWBurstCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchecked
         return settings
     }
 
+    // Exposure bias is a device configuration property: AVFoundation documents that setting it
+    // while the device is not locked for configuration raises an exception, and an Objective-C
+    // exception cannot be caught by Swift, so it terminates the app. The lock can legitimately
+    // fail (the device can be in use elsewhere), in which case the frame is simply captured at
+    // whatever bias the device already holds.
     private func applyExposureBias(_ bias: Float) {
         guard let device else { return }
         let clamped = min(max(bias, device.minExposureTargetBias), device.maxExposureTargetBias)
+        do {
+            try device.lockForConfiguration()
+        } catch {
+            return
+        }
+        defer { device.unlockForConfiguration() }
         device.setExposureTargetBias(clamped)
     }
 

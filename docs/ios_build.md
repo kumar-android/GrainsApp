@@ -48,6 +48,14 @@ Using `.quality` raises `NSInvalidArgumentException` at
 The output and each request now use `.speed`. See Apple's
 [capture request rules](https://developer.apple.com/documentation/avfoundation/avcapturephotooutput/capturephoto(with:delegate:)).
 
+`setExposureTargetBias(_:)` is a device configuration property, so it must be set
+between `lockForConfiguration()` and `unlockForConfiguration()`. Apple's documentation
+states that setting it while the device is unlocked raises an exception, and like the
+`.quality` case that exception is Objective-C and cannot be caught by Swift, so an
+unlocked bias write terminates the app on the first frame of the burst.
+`applyExposureBias` now locks the device around the write and treats a failed lock as
+"keep the current bias" instead of failing the burst.
+
 The shared `GCamCameraApp` scheme includes the XCTest target. The macOS CI
 workflow runs its simulator tests as well as the unsigned device build. Tests
 cover RAW request settings, Bayer phase preservation, padded rows, CFA detection
