@@ -24,4 +24,4 @@ build/win/gcam_cli.exe process work/burst --profile config/gcam_natural.xml --ou
 build/win/rawpack_dump.exe work/burst/frame_0.rawpack
 ```
 
-The Windows CI workflow configures, builds, tests, generates a synthetic burst, processes it, and uploads the diagnostics. It never invokes an iOS target.
+GitHub Actions is intentionally reserved for the native iOS build on a macOS runner. Run the Windows validation locally with the commands above; it never depends on Xcode or Apple SDKs.
