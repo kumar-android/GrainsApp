@@ -19,6 +19,7 @@ jobs:
           set -euo pipefail
           xcodebuild \
             -project ios_app/GCamCameraApp.xcodeproj \
+            -scheme GCamCameraApp \
             -target GCamCameraApp \
             -configuration Release \
             -sdk iphoneos \
