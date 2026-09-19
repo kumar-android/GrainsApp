@@ -12,6 +12,9 @@ final class CameraController: ObservableObject {
 
     private let capture = RAWBurstCapture()
     private var previewTask: Task<Void, Never>?
+    private var operationTask: Task<Void, Never>?
+
+    var captureSession: AVCaptureSession { capture.session }
 
     init() {}
 
@@ -38,6 +41,7 @@ final class CameraController: ObservableObject {
 
     func stopPreview() {
         previewTask?.cancel()
+        operationTask?.cancel()
         capture.stop()
     }
 
@@ -52,7 +56,8 @@ final class CameraController: ObservableObject {
         state = .arming
         lastError = ""
         diagnostics = ""
-        Task {
+        operationTask = Task { [weak self] in
+            guard let self else { return }
             do {
                 state = .capturing
                 let frames = try await capture.captureBurst(count: 8)
@@ -60,18 +65,22 @@ final class CameraController: ObservableObject {
                 guard let profilePath = Bundle.main.path(forResource: "gcam_natural", ofType: "xml") else {
                     throw NSError(domain: "GCamCamera", code: 26, userInfo: [NSLocalizedDescriptionKey: "The bundled tuning profile is missing"])
                 }
-                state = .aligning
+                state = .merging
                 let processed = try await Task.detached(priority: .userInitiated) {
                     let processor = try GCamProcessor()
                     return try processor.process(frames: frames, profilePath: profilePath)
                 }.value
+                try Task.checkCancellation()
                 diagnostics = processed.diagnostics
                 state = .rendering
                 resultJPEG = try ProcessedImageEncoder.jpeg(width: processed.width, height: processed.height, linearRGB: processed.rgb)
                 state = .saving
                 if let resultJPEG { try await PhotosExporter.saveJPEG(resultJPEG) }
                 state = .idle
+            } catch is CancellationError {
+                state = .idle
             } catch {
+                if Task.isCancelled { state = .idle; return }
                 lastError = error.localizedDescription
                 state = .failed
             }
@@ -81,7 +90,8 @@ final class CameraController: ObservableObject {
     func exportDebugBurst() {
         guard state == .idle, isReady else { return }
         state = .arming
-        Task {
+        operationTask = Task { [weak self] in
+            guard let self else { return }
             do {
                 state = .capturing
                 let frames = try await capture.captureBurst(count: 8)
@@ -90,8 +100,12 @@ final class CameraController: ObservableObject {
                 try await Task.detached(priority: .utility) {
                     try RAWPackExporter.write(frames: frames, to: directory)
                 }.value
+                try Task.checkCancellation()
+                state = .idle
+            } catch is CancellationError {
                 state = .idle
             } catch {
+                if Task.isCancelled { state = .idle; return }
                 lastError = error.localizedDescription
                 state = .failed
             }

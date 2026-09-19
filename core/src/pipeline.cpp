@@ -504,20 +504,17 @@ ProcessResult process_burst(const std::vector<RawFrame>& frames, const TuningPro
 
     const std::uint32_t width = frames.front().metadata.width;
     const std::uint32_t height = frames.front().metadata.height;
-    std::vector<RawFrame> selected;
     const std::size_t frameLimit = std::min<std::size_t>(frames.size(), profile.maxFrames);
-    selected.reserve(frameLimit);
     for (std::size_t i = 0; i < frameLimit; ++i) {
         if (!frames[i].valid() || frames[i].metadata.width != width || frames[i].metadata.height != height || frames[i].metadata.bayer != frames.front().metadata.bayer) {
             throw std::invalid_argument("RAW burst frames do not share dimensions and Bayer pattern");
         }
-        selected.push_back(frames[i]);
     }
 
-    const std::array<float, 3> burstWb = usable_white_balance(selected.front(), profile);
+    const std::array<float, 3> burstWb = usable_white_balance(frames.front(), profile);
     std::vector<NormalizedFrame> normalized;
-    normalized.reserve(selected.size());
-    for (const RawFrame& frame : selected) normalized.push_back(normalize_raw(frame, profile, burstWb));
+    normalized.reserve(frameLimit);
+    for (std::size_t i = 0; i < frameLimit; ++i) normalized.push_back(normalize_raw(frames[i], profile, burstWb));
 
     std::size_t referenceIndex = 0;
     float bestSharpness = gradient_energy(normalized.front());

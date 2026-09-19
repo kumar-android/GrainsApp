@@ -50,7 +50,7 @@ Place paired scene captures under `assets/reference/` and use the benchmark scri
 
 ## iOS handoff
 
-The iOS source tree is intentionally excluded from `CMakeLists.txt`. Open `ios_app/GCamCameraApp.xcodeproj` on macOS, select a real iPhone 16 Pro, configure signing, and build. See [docs/ios_build.md](docs/ios_build.md) and [docs/macos_ios_build.md](docs/macos_ios_build.md).
+The iOS source tree is intentionally excluded from `CMakeLists.txt`. Open `ios_app/GCamCameraApp.xcodeproj` on macOS, select a real iPhone 16 Pro, configure signing, and build. The app renders a memory-safe on-device preview while preserving full-resolution RAW export for Windows processing. See [docs/ios_build.md](docs/ios_build.md) and [docs/macos_ios_build.md](docs/macos_ios_build.md).
 
 The iOS build was not executed in this Windows environment because Apple SDK/Xcode is unavailable here. The portable C++ path is the correctness oracle; Metal is an acceleration path with matching kernel responsibilities.
 

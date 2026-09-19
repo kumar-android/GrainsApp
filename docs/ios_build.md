@@ -27,4 +27,4 @@ xcodebuild -project ios_app/GCamCameraApp.xcodeproj \
   -destination 'platform=iOS Simulator,name=iPhone 16 Pro' test
 ```
 
-The RAW debug path saves a sequence of `GCAMRAW1` frames and a manifest so the same burst can be processed by `gcam_cli` on Windows. Final HEIF/JPEG saving is an iOS Photos concern and is not used as a substitute for the RAW path.
+The app's Capture preview action renders a memory-bounded on-device result from the RAW burst. The RAW debug path saves the original full-resolution sequence of `GCAMRAW1` frames and a manifest so the same burst can be processed by `gcam_cli` on Windows. Final HEIF/JPEG saving is an iOS Photos concern and is not used as a substitute for the full-resolution RAW path.

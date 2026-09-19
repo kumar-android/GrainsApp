@@ -39,29 +39,61 @@ final class RAWBurstCapture: NSObject, AVCapturePhotoCaptureDelegate {
     private var frames: [CapturedRAWFrame] = []
 
     func configure() throws {
-        guard !isConfigured else { return }
-        let camera = try discovery.mainWideCamera()
-        session.beginConfiguration()
-        defer { session.commitConfiguration() }
-        session.sessionPreset = .photo
-        guard let input = try? AVCaptureDeviceInput(device: camera), session.canAddInput(input), session.canAddOutput(output) else {
-            throw NSError(domain: "GCamCamera", code: 3, userInfo: [NSLocalizedDescriptionKey: "Unable to configure the main camera"])
+        try queue.sync {
+            guard !isConfigured else { return }
+            let camera = try discovery.mainWideCamera()
+            session.beginConfiguration()
+            defer { session.commitConfiguration() }
+            session.sessionPreset = .photo
+            guard let input = try? AVCaptureDeviceInput(device: camera), session.canAddInput(input), session.canAddOutput(output) else {
+                throw NSError(domain: "GCamCamera", code: 3, userInfo: [NSLocalizedDescriptionKey: "Unable to configure the main camera"])
+            }
+            session.addInput(input)
+            session.addOutput(output)
+            do {
+                rawType = try discovery.highestQualityRAWType(from: output)
+            } catch {
+                session.removeOutput(output)
+                session.removeInput(input)
+                throw error
+            }
+            if #available(iOS 13.0, *) { output.maxPhotoQualityPrioritization = .quality }
+            isConfigured = true
         }
-        session.addInput(input)
-        session.addOutput(output)
-        rawType = try discovery.highestQualityRAWType(from: output)
-        if #available(iOS 13.0, *) { output.maxPhotoQualityPrioritization = .quality }
-        isConfigured = true
     }
 
-    func start() { queue.async { self.session.startRunning() } }
-    func stop() { queue.async { self.session.stopRunning() } }
+    func start() {
+        queue.async {
+            guard self.isConfigured, !self.session.isRunning else { return }
+            self.session.startRunning()
+        }
+    }
+
+    func stop() {
+        queue.async {
+            if self.session.isRunning { self.session.stopRunning() }
+            if self.continuation != nil {
+                self.finish(.failure(NSError(domain: "GCamCamera", code: 7, userInfo: [NSLocalizedDescriptionKey: "Camera capture was stopped"])))
+            }
+        }
+    }
 
     @MainActor
     func captureBurst(count: Int) async throws -> [CapturedRAWFrame] {
-        guard isConfigured, rawType != 0 else { throw NSError(domain: "GCamCamera", code: 4, userInfo: [NSLocalizedDescriptionKey: "RAW capture is not configured"]) }
         return try await withCheckedThrowingContinuation { continuation in
             queue.async {
+                guard self.isConfigured, self.rawType != 0 else {
+                    continuation.resume(throwing: NSError(domain: "GCamCamera", code: 4, userInfo: [NSLocalizedDescriptionKey: "RAW capture is not configured"]))
+                    return
+                }
+                guard self.session.isRunning else {
+                    continuation.resume(throwing: NSError(domain: "GCamCamera", code: 10, userInfo: [NSLocalizedDescriptionKey: "The camera preview is not running"]))
+                    return
+                }
+                guard self.continuation == nil else {
+                    continuation.resume(throwing: NSError(domain: "GCamCamera", code: 8, userInfo: [NSLocalizedDescriptionKey: "A RAW burst is already in progress"]))
+                    return
+                }
                 self.targetCount = max(1, min(count, 12))
                 self.nextIndex = 0
                 self.frames.removeAll(keepingCapacity: true)
@@ -82,8 +114,13 @@ final class RAWBurstCapture: NSObject, AVCapturePhotoCaptureDelegate {
         guard let continuation else { return }
         self.continuation = nil
         switch result {
-        case .success(let frames): continuation.resume(returning: frames)
-        case .failure(let error): continuation.resume(throwing: error)
+        case .success:
+            let capturedFrames = self.frames
+            self.frames.removeAll(keepingCapacity: false)
+            continuation.resume(returning: capturedFrames)
+        case .failure(let error):
+            self.frames.removeAll(keepingCapacity: false)
+            continuation.resume(throwing: error)
         }
     }
 
@@ -121,6 +158,10 @@ enum RAWBufferReader {
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
         let stride = CVPixelBufferGetBytesPerRow(pixelBuffer)
+        guard width > 0, height > 0, stride >= width * MemoryLayout<UInt16>.stride, stride % MemoryLayout<UInt16>.stride == 0,
+              CVPixelBufferGetDataSize(pixelBuffer) >= stride * height else {
+            throw NSError(domain: "GCamCamera", code: 9, userInfo: [NSLocalizedDescriptionKey: "RAW pixel buffer has an unsupported layout"])
+        }
         let source = base.assumingMemoryBound(to: UInt16.self)
         let samplesPerRow = stride / MemoryLayout<UInt16>.stride
         var pixels = [UInt16](repeating: 0, count: width * height)
