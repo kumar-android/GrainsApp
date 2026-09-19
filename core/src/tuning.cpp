@@ -160,6 +160,10 @@ TuningProfile load_tuning_profile(const std::string& path) {
     profile.highlightRolloff = number(tone, "highlight", profile.highlightRolloff);
     profile.shoulder = number(tone, "shoulder", profile.shoulder);
     profile.localContrast = number(tone, "localContrast", profile.localContrast);
+    profile.localToneStrength = number(tone, "localStrength", profile.localToneStrength);
+    profile.localToneRange = number(tone, "localRange", profile.localToneRange);
+    profile.highlightRecovery = number(tone, "highlightRecovery", profile.highlightRecovery);
+    profile.highlightHeadroomStops = number(tone, "headroomStops", profile.highlightHeadroomStops);
     profile.microcontrastAmount = number(detail, "microcontrast", profile.microcontrastAmount);
     profile.fineSharpen = number(detail, "fineSharpen", profile.fineSharpen);
     profile.midSharpen = number(detail, "midSharpen", profile.midSharpen);
@@ -186,6 +190,10 @@ TuningProfile load_tuning_profile(const std::string& path) {
     validate_range("outlierRejection", profile.outlierRejection, 0.01f, 2.0f);
     validate_range("chromaDenoise", profile.chromaDenoise, 0.0f, 0.75f);
     validate_range("lumaDenoise", profile.lumaDenoise, 0.0f, 1.0f);
+    validate_range("localToneStrength", profile.localToneStrength, 0.0f, 1.0f);
+    validate_range("highlightRecovery", profile.highlightRecovery, 0.0f, 1.0f);
+    validate_range("localToneRange", profile.localToneRange, 0.10f, 4.0f);
+    validate_range("highlightHeadroomStops", profile.highlightHeadroomStops, 0.0f, 4.0f);
     validate_range("fineSharpen", profile.fineSharpen, 0.0f, 0.75f);
     validate_range("haloProtection", profile.haloProtection, 0.0f, 1.0f);
     return profile;

@@ -17,6 +17,12 @@ struct PackedFrame {
     RawMetadata metadata;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
+    // The plane holds the sensor's own normalized signal, one sample per sensel. White
+    // balance is not folded in here: it is a gain above one that would push the brighter
+    // colour channels past the end of the range the plane can store, and clipping them at
+    // the packing step destroys highlight range the merge is supposed to preserve. The
+    // gains travel with the frame and are applied once, after the merge.
+    std::array<float, 3> whiteBalance = {1.0f, 1.0f, 1.0f};
     std::vector<std::uint16_t> samples;
 };
 

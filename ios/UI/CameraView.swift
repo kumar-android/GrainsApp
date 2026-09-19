@@ -57,15 +57,35 @@ struct CameraView: View {
                         }
                     }
                 }
+                Divider()
+                // Highlight recovery is the second half of the same decision, so it lives in the
+                // same menu: the burst length and how far it reaches below the metered exposure
+                // together decide how much range the merge has to work with.
+                ForEach(CameraController.exposureBracketOptions, id: \.self) { stops in
+                    Button {
+                        controller.exposureBracketStops = stops
+                    } label: {
+                        if controller.exposureBracketStops == stops {
+                            Label(bracketTitle(stops), systemImage: "checkmark")
+                        } else {
+                            Text(bracketTitle(stops))
+                        }
+                    }
+                }
             } label: {
-                Label("\(controller.mergeFrameCount) frames", systemImage: "square.stack.3d.down.right")
-                    .font(.caption.weight(.bold))
-                    .padding(.horizontal, 11)
-                    .padding(.vertical, 7)
-                    .background(.black.opacity(0.42), in: Capsule())
+                VStack(alignment: .trailing, spacing: 1) {
+                    Label("\(controller.mergeFrameCount) frames", systemImage: "square.stack.3d.down.right")
+                        .font(.caption.weight(.bold))
+                    Text(bracketShortTitle(controller.exposureBracketStops))
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.78))
+                }
+                .padding(.horizontal, 11)
+                .padding(.vertical, 6)
+                .background(.black.opacity(0.42), in: Capsule())
             }
             .disabled(!canCapture)
-            .accessibilityLabel("Merge frames")
+            .accessibilityLabel("Merge frames and highlight recovery")
             Label("RAW", systemImage: "camera.aperture")
                 .font(.caption.weight(.bold))
                 .padding(.horizontal, 11)
@@ -73,6 +93,14 @@ struct CameraView: View {
                 .background(.black.opacity(0.42), in: Capsule())
         }
         .foregroundStyle(.white)
+    }
+
+    private func bracketTitle(_ stops: Float) -> String {
+        stops <= 0 ? "Single exposure" : String(format: "%.1f EV bracket", stops)
+    }
+
+    private func bracketShortTitle(_ stops: Float) -> String {
+        stops <= 0 ? "single exposure" : String(format: "HDR %.1f EV", stops)
     }
 
     private var bottomBar: some View {

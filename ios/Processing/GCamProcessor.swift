@@ -126,10 +126,17 @@ final class GCamProcessor {
         let outputWidth = sampling.width
         let outputHeight = sampling.height
         var pixels = [UInt16](repeating: 0, count: outputWidth * outputHeight)
-        for y in 0..<outputHeight {
-            let sourceY = sampling.sourceCoordinate(y)
-            for x in 0..<outputWidth {
-                pixels[y * outputWidth + x] = frame.pixels[sourceY * sourceWidth + sampling.sourceCoordinate(x)]
+        // Box-average each cell the smaller grid replaces instead of picking one sensel out of
+        // it, so the detail the reduced grid cannot hold is filtered out rather than folded back
+        // in as moire.
+        pixels.withUnsafeMutableBufferPointer { destination in
+            frame.pixels.withUnsafeBufferPointer { source in
+                guard let base = source.baseAddress, let out = destination.baseAddress else { return }
+                for y in 0..<outputHeight {
+                    for x in 0..<outputWidth {
+                        out[y * outputWidth + x] = sampling.reducedSample(base, samplesPerRow: sourceWidth, x: x, y: y)
+                    }
+                }
             }
         }
         var metadata = frame.metadata

@@ -13,6 +13,12 @@ final class CameraController: ObservableObject {
     // by what fits in memory, so the result summary reports how many frames merged.
     static let mergeFrameOptions = [4, 8, 12, 16, 24, 32]
     @Published var mergeFrameCount = 12
+    // How far below the metered exposure the burst reaches, in stops. The merge puts every frame
+    // back into one exposure, so the darker frames only contribute where the metered exposure
+    // clipped: this is what buys highlight range the sensor could not hold in one shot. Zero
+    // captures a plain uniform burst.
+    static let exposureBracketOptions: [Float] = [0, 1.5, 2.5]
+    @Published var exposureBracketStops: Float = 2.5
     @Published private(set) var isReady = false
 
     private let capture = RAWBurstCapture()
@@ -77,7 +83,7 @@ final class CameraController: ObservableObject {
                 // Capture keeps the full sensor resolution. Reducing the RAW here
                 // would cap the merged result at half the linear resolution and
                 // remove the sub-pixel frame differences the engine aligns on.
-                let frames = try await capture.captureBurst(count: mergeFrameCount)
+                let frames = try await capture.captureBurst(count: mergeFrameCount, exposureBracketStops: exposureBracketStops)
                 try Task.checkCancellation()
                 state = .collecting
                 guard let profilePath = Bundle.main.path(forResource: "gcam_natural", ofType: "xml") else {

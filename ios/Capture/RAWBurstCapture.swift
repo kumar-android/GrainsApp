@@ -34,12 +34,19 @@ final class RAWBurstCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchecked
     private let queue = DispatchQueue(label: "gcam.capture.serial")
     private let discovery = RAWDeviceDiscovery()
     private var rawType: OSType = 0
+    private var device: AVCaptureDevice?
     private var isConfigured = false
     private var continuation: CheckedContinuation<[CapturedRAWFrame], Error>?
     private var targetCount = 8
     private var nextIndex: UInt32 = 0
     private var frames: [CapturedRAWFrame] = []
     private var processingMaxDimension: Int?
+    // Exposure bias per frame of the burst, in EV relative to the metered exposure. The camera
+    // is asked for frame i's bias just before that frame is captured, so the burst sweeps from
+    // the metered exposure down to the darkest one. Whatever the sensor actually used lands in
+    // each frame's metadata, so a bias the sensor never applied simply leaves the burst uniform
+    // and the merge treats it as one exposure.
+    private var exposureBrackets: [Float] = []
     private var activeRequestID: Int64?
     private var receivedRAW = false
     private let maximumBurstFrames = 32
@@ -60,6 +67,7 @@ final class RAWBurstCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchecked
         session.beginConfiguration()
         defer { session.commitConfiguration() }
         session.sessionPreset = .photo
+        device = camera
         let input = try AVCaptureDeviceInput(device: camera)
         guard session.canAddInput(input), session.canAddOutput(output) else {
             throw NSError(domain: "GCamCamera", code: 3, userInfo: [NSLocalizedDescriptionKey: "Unable to configure the main camera"])
@@ -104,8 +112,16 @@ final class RAWBurstCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchecked
         }
     }
 
+    // Exposure bias for frame `index` of `count`, ramping the burst from the metered exposure
+    // down to `stops` below it. Every frame is on the ramp, so a short burst reaches the same
+    // darkest exposure a long one does instead of only sampling two levels.
+    static func exposureBracket(count: Int, stops: Float) -> [Float] {
+        guard count > 1, stops > 0 else { return Array(repeating: 0, count: max(1, count)) }
+        return (0..<count).map { index in -stops * Float(index) / Float(count - 1) }
+    }
+
     @MainActor
-    func captureBurst(count: Int, maxDimension: Int? = nil) async throws -> [CapturedRAWFrame] {
+    func captureBurst(count: Int, maxDimension: Int? = nil, exposureBracketStops: Float = 0) async throws -> [CapturedRAWFrame] {
         try Task.checkCancellation()
         return try await withCheckedThrowingContinuation { continuation in
             queue.async {
@@ -125,6 +141,7 @@ final class RAWBurstCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchecked
                 self.nextIndex = 0
                 self.processingMaxDimension = maxDimension
                 self.frames.removeAll(keepingCapacity: true)
+                self.exposureBrackets = Self.exposureBracket(count: self.targetCount, stops: exposureBracketStops)
                 self.burstGeneration &+= 1
                 self.continuation = continuation
                 self.armStallWatchdog()
@@ -145,6 +162,11 @@ final class RAWBurstCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchecked
             return
         }
         let settings = Self.rawSettings(pixelFormat: rawType)
+        // Best effort: the bias is asked for immediately before the request. A long burst gives
+        // the metering several frames to follow the ramp while a short one may only track part
+        // of it, and either way every frame records the exposure it really used.
+        let bracketIndex = min(frames.count, max(0, exposureBrackets.count - 1))
+        applyExposureBias(exposureBrackets.indices.contains(bracketIndex) ? exposureBrackets[bracketIndex] : 0)
         activeRequestID = settings.uniqueID
         receivedRAW = false
         armStallWatchdog()
@@ -158,6 +180,12 @@ final class RAWBurstCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchecked
         // in capturePhoto, which cannot be caught by a Swift do/catch.
         settings.photoQualityPrioritization = .speed
         return settings
+    }
+
+    private func applyExposureBias(_ bias: Float) {
+        guard let device else { return }
+        let clamped = min(max(bias, device.minExposureTargetBias), device.maxExposureTargetBias)
+        device.setExposureTargetBias(clamped)
     }
 
     private func armStallWatchdog() {
@@ -174,6 +202,8 @@ final class RAWBurstCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchecked
     private func finish(_ result: Result<[CapturedRAWFrame], Error>) {
         guard let continuation else { return }
         self.continuation = nil
+        exposureBrackets.removeAll(keepingCapacity: true)
+        applyExposureBias(0)
         stallWatchdog?.cancel()
         stallWatchdog = nil
         activeRequestID = nil
@@ -274,10 +304,8 @@ enum RAWBufferReader {
         let outputHeight = sampling.height
         var pixels = [UInt16](repeating: 0, count: outputWidth * outputHeight)
         for y in 0..<outputHeight {
-            let sourceY = sampling.sourceCoordinate(y)
             for x in 0..<outputWidth {
-                let sourceX = sampling.sourceCoordinate(x)
-                pixels[y * outputWidth + x] = source[sourceY * samplesPerRow + sourceX]
+                pixels[y * outputWidth + x] = sampling.reducedSample(source, samplesPerRow: samplesPerRow, x: x, y: y)
             }
         }
 
@@ -335,6 +363,8 @@ struct BayerSampling {
     let scale: Int
     let width: Int
     let height: Int
+    let sourceWidth: Int
+    let sourceHeight: Int
 
     init(width: Int, height: Int, maxDimension: Int?) throws {
         guard width >= 2, height >= 2, maxDimension.map({ $0 >= 2 }) ?? true else {
@@ -356,6 +386,8 @@ struct BayerSampling {
             throw NSError(domain: "GCamCamera", code: 9, userInfo: [NSLocalizedDescriptionKey: "RAW sampling dimensions are invalid"])
         }
         self.scale = scale
+        self.sourceWidth = width
+        self.sourceHeight = height
         if scale == 1 {
             self.width = width
             self.height = height
@@ -367,6 +399,30 @@ struct BayerSampling {
 
     func sourceCoordinate(_ coordinate: Int) -> Int {
         (coordinate / 2) * (2 * scale) + coordinate % 2
+    }
+
+    // Every same-phase sensel inside the 2x2 cells one output sample replaces, averaged. Keeping
+    // just one sensel per cell would alias: a 12 MP frame reduced to a third of its width carries
+    // detail above the new sampling rate, and dropping the samples that carry it folds that detail
+    // back into the image as moire. Averaging keeps the CFA phase - which is what the reduced
+    // frame still has to demosaic - and low-passes what the smaller grid cannot hold.
+    func reducedSample(_ samples: UnsafePointer<UInt16>, samplesPerRow: Int, x: Int, y: Int) -> UInt16 {
+        guard scale > 1 else { return samples[y * samplesPerRow + x] }
+        let firstX = (x / 2) * (2 * scale) + x % 2
+        let firstY = (y / 2) * (2 * scale) + y % 2
+        var sum = 0
+        var count = 0
+        for oy in stride(from: 0, to: 2 * scale, by: 2) {
+            for ox in stride(from: 0, to: 2 * scale, by: 2) {
+                let sourceX = firstX + ox
+                let sourceY = firstY + oy
+                guard sourceX < sourceWidth, sourceY < sourceHeight else { continue }
+                sum += Int(samples[sourceY * samplesPerRow + sourceX])
+                count += 1
+            }
+        }
+        guard count > 0 else { return 0 }
+        return UInt16((sum + count / 2) / count)
     }
 }
 

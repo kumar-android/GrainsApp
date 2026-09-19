@@ -49,6 +49,14 @@ struct TuningProfile {
     float highlightRolloff = 0.72f;
     float shoulder = 0.24f;
     float localContrast = 0.035f;
+    float localToneStrength = 0.55f;
+    // Log-luminance distance from the scene mean at which local compression stops.
+    float localToneRange = 0.85f;
+    float highlightRecovery = 0.45f;
+    // How far above the reference frame's white level the merge is allowed to carry a
+    // pixel that a darker frame in the same burst still resolved. The recovered range is
+    // rolled off into the last stretch below white instead of being clipped flat.
+    float highlightHeadroomStops = 1.5f;
 
     float fineSharpen = 0.10f;
     float midSharpen = 0.035f;

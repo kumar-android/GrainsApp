@@ -84,6 +84,17 @@ struct ProcessingDiagnostics {
     float meanAlignmentResidual = 0.0f;
     float motionFraction = 0.0f;
     float mergeConfidence = 0.0f;
+    // Mean luminance movement the local tone map applied, in stops, and the share
+    // of the finished frame still pinned at white.
+    float toneMapStops = 0.0f;
+    float clippedFraction = 0.0f;
+    // Spread of the burst's exposures in stops, and how much of the merged plane was
+    // recovered above the reference frame's white level by a darker frame.
+    float exposureRangeStops = 0.0f;
+    float recoveredHighlightFraction = 0.0f;
+    // White point the recovered highlight was mapped to, in the plane's own units, or one
+    // when the burst held no range above white and the render was left at its metered exposure.
+    float highlightWhitePoint = 1.0f;
     float peakMemoryMiB = 0.0f;
     double processingMilliseconds = 0.0;
     std::vector<AlignmentEstimate> alignments;

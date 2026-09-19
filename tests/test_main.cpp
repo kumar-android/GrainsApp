@@ -49,6 +49,142 @@ RawFrame make_frame(std::uint32_t width, std::uint32_t height, std::uint32_t ind
     return frame;
 }
 
+// The same scene recorded at a chosen exposure. A frame the burst underexposed is darker in
+// proportion, and a highlight it no longer clips is the only place that frame carries
+// information the brightest frame of the burst lost.
+RawFrame make_exposure_frame(std::uint32_t width, std::uint32_t height, std::uint32_t index, float exposureScale, bool withHighlights, float highlightLevel = 1.35f) {
+    RawFrame frame;
+    frame.metadata.width = width;
+    frame.metadata.height = height;
+    frame.metadata.rowStrideBytes = width * 2U;
+    frame.metadata.bitDepth = 12;
+    frame.metadata.bayer = BayerPattern::RGGB;
+    frame.metadata.blackLevel = 64.0f;
+    frame.metadata.whiteLevel = 4095.0f;
+    frame.metadata.iso = 200.0f;
+    frame.metadata.exposureTimeSeconds = (1.0f / 120.0f) * exposureScale;
+    frame.metadata.whiteBalance = {2.0f, 1.0f, 1.5f};
+    frame.metadata.frameIndex = index;
+    frame.metadata.lensIdentifier = "test-lens";
+    frame.metadata.sensorIdentifier = "test-sensor";
+    frame.pixels.resize(static_cast<std::size_t>(width) * height);
+    for (std::uint32_t y = 0; y < height; ++y) {
+        for (std::uint32_t x = 0; x < width; ++x) {
+            float scene = 0.16f + 0.24f * static_cast<float>(x) / static_cast<float>(width) + 0.10f * static_cast<float>(y) / static_cast<float>(height);
+            if (withHighlights && x > width / 2U && y > height / 3U && y < height * 2U / 3U) {
+                scene = highlightLevel + 0.25f * std::sin(static_cast<float>(x) * 0.6f) * std::sin(static_cast<float>(y) * 0.5f);
+            }
+            const PixelChannel channel = bayer_channel(frame.metadata.bayer, x, y);
+            // The per-channel gains are the inverse of the white balance the metadata carries,
+            // so the highlight stays neutral - a bright sky - and the white balance leaves its
+            // levels where the scene put them. A red-hot highlight would sit above the display
+            // range in red alone however it was tone mapped, which is a different problem from
+            // the one this frame exists to exercise.
+            const float gain = channel == PixelChannel::Red ? 0.5f : (channel == PixelChannel::Green ? 1.0f : 1.0f / 1.5f);
+            const float value = std::max(0.0f, std::min(1.0f, scene * gain * exposureScale));
+            frame.at(x, y) = static_cast<std::uint16_t>(std::lround(frame.metadata.blackLevel + value * (frame.metadata.whiteLevel - frame.metadata.blackLevel)));
+        }
+    }
+    return frame;
+}
+
+double mean_absolute_difference(const RGBImage& a, const RGBImage& b) {
+    double sum = 0.0;
+    for (std::size_t i = 0; i < a.pixels.size(); ++i) sum += std::fabs(a.pixels[i] - b.pixels[i]);
+    return a.pixels.empty() ? 0.0 : sum / static_cast<double>(a.pixels.size());
+}
+
+// Standard deviation of the highlight patch in one channel. The channel matters: in the
+// synthetic highlight below the metered exposure clips red flat while green and blue keep
+// their slope, so the luma spread of that patch is carried by the channels that never
+// clipped and says nothing about whether anything was recovered. Red is the channel that
+// tells the two bursts apart, so it is the one the test measures.
+double highlight_patch_spread(const RGBImage& image, PixelChannel channel) {
+    double sum = 0.0;
+    double sumSquares = 0.0;
+    std::size_t count = 0;
+    for (std::uint32_t y = image.height / 3U + 1U; y < image.height * 2U / 3U - 1U; ++y) {
+        for (std::uint32_t x = image.width / 2U + 1U; x < image.width - 1U; ++x) {
+            const double value = image.at(x, y, channel);
+            sum += value;
+            sumSquares += value * value;
+            ++count;
+        }
+    }
+    if (count == 0) return 0.0;
+    const double mean = sum / static_cast<double>(count);
+    return std::sqrt(std::max(0.0, sumSquares / static_cast<double>(count) - mean * mean));
+}
+
+// A burst whose frames re-metered must merge to the exposure the camera metered, not to some
+// average of the exposures it happened to use. Nothing else about the burst changes, so the
+// two merges have to agree.
+void test_exposure_normalized_merge() {
+    std::vector<RawFrame> uniform;
+    std::vector<RawFrame> bracketed;
+    for (std::uint32_t i = 0; i < 4; ++i) uniform.push_back(make_exposure_frame(64, 48, i, 1.0f, false));
+    bracketed.push_back(make_exposure_frame(64, 48, 0, 1.0f, false));
+    bracketed.push_back(make_exposure_frame(64, 48, 1, 1.0f, false));
+    bracketed.push_back(make_exposure_frame(64, 48, 2, 0.25f, false));
+    bracketed.push_back(make_exposure_frame(64, 48, 3, 0.25f, false));
+    TuningProfile profile = default_tuning_profile();
+    const ProcessResult reference = process_burst(uniform, profile);
+    const ProcessResult measured = process_burst(bracketed, profile);
+    require(reference.diagnostics.exposureRangeStops < 0.01f, "a uniform burst spans no exposure range");
+    require(std::fabs(measured.diagnostics.exposureRangeStops - 2.0f) < 0.05f, "measured exposure range in stops");
+    require(mean_absolute_difference(reference.image, measured.image) < 0.01, "an underexposed frame must merge at the metered exposure");
+}
+
+// The reason to bracket: a highlight the metered exposure clipped is still in the frames it
+// underexposed, and the merge has to carry that range and roll it off instead of pinning it
+// to white. A uniform burst has nothing to recover, so it must report none.
+void test_bracketed_highlight_recovery() {
+    std::vector<RawFrame> uniform;
+    std::vector<RawFrame> bracketed;
+    for (std::uint32_t i = 0; i < 6; ++i) {
+        uniform.push_back(make_exposure_frame(64, 48, i, 1.0f, true));
+        bracketed.push_back(make_exposure_frame(64, 48, i, i < 3U ? 1.0f : 0.25f, true));
+    }
+    TuningProfile profile = default_tuning_profile();
+    const ProcessResult clipped = process_burst(uniform, profile);
+    const ProcessResult recovered = process_burst(bracketed, profile);
+    require(clipped.diagnostics.recoveredHighlightFraction == 0.0f, "a uniform burst holds no range above white");
+    require(recovered.diagnostics.recoveredHighlightFraction > 0.001f, "a bracketed burst carries range above white");
+    // Green is the channel the metered exposure clips first, so it is the one that comes back
+    // with texture only if the burst carried the range.
+    const double clippedSpread = highlight_patch_spread(clipped.image, PixelChannel::Green);
+    const double recoveredSpread = highlight_patch_spread(recovered.image, PixelChannel::Green);
+    require(recoveredSpread > clippedSpread * 2.0, "a recovered highlight must keep its texture instead of clipping flat");
+}
+
+// Carrying range above white is only worth anything if the render puts it back inside the
+// display range: a highlight the merged plane holds far above white must come out below white,
+// with its texture, instead of being pinned there by the clamp every later stage applies. The
+// metered burst clips that highlight in every frame, so it has nothing to recover: it must keep
+// its own exposure rather than being re-exposed by a white point that only the bracket earned.
+void test_recovered_highlight_stays_below_white() {
+    std::vector<RawFrame> uniform;
+    std::vector<RawFrame> bracketed;
+    for (std::uint32_t i = 0; i < 6; ++i) {
+        uniform.push_back(make_exposure_frame(64, 48, i, 1.0f, true, 3.2f));
+        bracketed.push_back(make_exposure_frame(64, 48, i, i < 3U ? 1.0f : 0.25f, true, 3.2f));
+    }
+    TuningProfile profile = default_tuning_profile();
+    const ProcessResult clipped = process_burst(uniform, profile);
+    const ProcessResult recovered = process_burst(bracketed, profile);
+    require(recovered.diagnostics.recoveredHighlightFraction > 0.001f, "the bracket recovered range above white");
+    require(clipped.diagnostics.highlightWhitePoint == 1.0f, "a burst with nothing above white keeps its metered exposure");
+    require(recovered.diagnostics.highlightWhitePoint > 1.5f, "a recovered highlight moves the display white point");
+    // Not zero: the very top of the recovered range still compresses toward white, as it must.
+    // The claim is that recovering the range keeps the highlight out of the clamp, not that the
+    // clamp disappears.
+    const float clippedShare = clipped.diagnostics.clippedFraction;
+    require(recovered.diagnostics.clippedFraction < clippedShare * 0.2f, "a recovered highlight is not pinned at white");
+    const double clippedSpread = highlight_patch_spread(clipped.image, PixelChannel::Green);
+    const double recoveredSpread = highlight_patch_spread(recovered.image, PixelChannel::Green);
+    require(recoveredSpread > clippedSpread * 2.0, "a recovered highlight keeps its texture below white");
+}
+
 void test_bayer_patterns() {
     require(bayer_channel(BayerPattern::RGGB, 0, 0) == PixelChannel::Red, "RGGB origin");
     require(bayer_channel(BayerPattern::BGGR, 0, 0) == PixelChannel::Blue, "BGGR origin");
@@ -135,6 +271,9 @@ void test_c_api() {
 int main() {
     try {
         test_bayer_patterns();
+        test_exposure_normalized_merge();
+        test_bracketed_highlight_recovery();
+        test_recovered_highlight_stays_below_white();
         test_rawpack_roundtrip();
         test_deterministic_processing_and_motion();
         test_profile_changes_output();

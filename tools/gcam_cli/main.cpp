@@ -20,7 +20,7 @@ void usage() {
     std::cout <<
         "gcam_cli - deterministic RAW burst laboratory\n\n"
         "Commands:\n"
-        "  generate-synthetic <directory> [--frames N] [--width N] [--height N]\n"
+        "  generate-synthetic <directory> [--frames N] [--width N] [--height N] [--exposure-range stops]\n"
         "  info <rawpack>\n"
         "  process <burst-directory|rawpack|manifest> --profile <xml> --output <ppm> [--diagnostics <json>]\n"
         "  benchmark <dataset-directory> --profile <xml> --output <directory>\n"
@@ -50,7 +50,11 @@ std::uint32_t hash_value(std::uint32_t value) {
     return value;
 }
 
-RawFrame synthetic_frame(std::uint32_t width, std::uint32_t height, std::uint32_t frameIndex, std::uint32_t frameCount) {
+// `exposureRangeStops` ramps the burst from the metered exposure down to that many stops
+// below it. Zero reproduces the plain uniform burst; a non-zero range gives the merge frames
+// that still resolve highlights the brightest frame clipped, which is the only way a burst
+// can carry more range than one frame does.
+RawFrame synthetic_frame(std::uint32_t width, std::uint32_t height, std::uint32_t frameIndex, std::uint32_t frameCount, float exposureRangeStops) {
     RawFrame frame;
     frame.metadata.width = width;
     frame.metadata.height = height;
@@ -60,7 +64,10 @@ RawFrame synthetic_frame(std::uint32_t width, std::uint32_t height, std::uint32_
     frame.metadata.blackLevel = 64.0f;
     frame.metadata.whiteLevel = 4095.0f;
     frame.metadata.iso = 200.0f;
-    frame.metadata.exposureTimeSeconds = 1.0f / 120.0f;
+    const float exposure = (frameCount > 1U && exposureRangeStops > 0.0f)
+        ? std::pow(2.0f, -exposureRangeStops * static_cast<float>(frameIndex) / static_cast<float>(frameCount - 1U))
+        : 1.0f;
+    frame.metadata.exposureTimeSeconds = exposure / 120.0f;
     frame.metadata.aperture = 1.78f;
     frame.metadata.colorTemperatureKelvin = 5200.0f;
     frame.metadata.whiteBalance = {2.0f, 1.0f, 1.55f};
@@ -83,15 +90,36 @@ RawFrame synthetic_frame(std::uint32_t width, std::uint32_t height, std::uint32_
             if (sx > 0.22f && sx < 0.46f && sy > 0.26f && sy < 0.70f) scene += 0.24f;
             if (frameIndex == frameCount / 2U && sx > 0.68f && sx < 0.85f && sy > 0.35f && sy < 0.62f) scene += 0.20f;
             scene = std::max(0.005f, std::min(0.96f, scene));
+            // Highlights far above white. The brightest exposure records a flat clipped patch
+            // here, so only the darker frames of a bracketed burst can show what the patch
+            // holds - and the texture inside it is what tells a recovered highlight from a
+            // white cut-out.
+            if (sx > 0.70f && sx < 0.88f && sy > 0.04f && sy < 0.24f) {
+                scene += 2.35f + 0.55f * std::sin(sx * 512.0f) * std::sin(sy * 448.0f);
+            }
             const PixelChannel channel = bayer_channel(frame.metadata.bayer, x, y);
             const float channelGain = channel == PixelChannel::Red ? 0.98f : (channel == PixelChannel::Green ? 0.74f : 0.62f);
             scene *= channelGain;
+            // Resolution target: three bands of sinusoids at 4, 8 and 16 pixel periods so a
+            // burst's detail recovery can be measured at the frequencies an interpolating merge
+            // is most likely to soften. The modulation is multiplicative and identical in every
+            // channel, so the target is luminance detail rather than a colour pattern that the
+            // chroma denoise would legitimately remove. It sits where no moving patch reaches.
+            if (sx > 0.50f && sx < 0.64f && sy > 0.06f && sy < 0.29f) {
+                const float band = (sy - 0.06f) / 0.23f;
+                const int bandIndex = std::min(2, static_cast<int>(band * 3.0f));
+                const float period = bandIndex == 0 ? 4.0f : (bandIndex == 1 ? 8.0f : 16.0f);
+                scene *= 1.0f + 0.35f * std::sin(((static_cast<float>(x) + shiftX) / period) * 6.2831853f);
+            }
+            // The sensor records what the exposure let through, and the grain follows the
+            // light that actually arrived, so an underexposed frame of the burst is noisier
+            // exactly where it is darker.
+            const float signal = std::max(0.0f, scene) * exposure;
             const std::uint32_t seed = hash_value(x * 73856093U ^ y * 19349663U ^ frameIndex * 83492791U);
             const float n1 = static_cast<float>(seed & 0xffffU) / 65535.0f;
             const float n2 = static_cast<float>((seed >> 16U) & 0xffffU) / 65535.0f;
-            const float noise = (n1 + n2 - 1.0f) * std::sqrt(std::max(0.0001f, scene) * 0.025f) + (n1 - 0.5f) * 0.004f;
-            if (frameIndex == frameCount - 1U && x > width / 2U && y > height / 3U && y < height * 2U / 3U) scene += 0.20f;
-            const float value = std::max(0.0f, std::min(1.0f, scene + noise));
+            const float noise = (n1 + n2 - 1.0f) * std::sqrt(std::max(0.0001f, signal) * 0.025f) + (n1 - 0.5f) * 0.004f;
+            const float value = std::max(0.0f, std::min(1.0f, signal + noise));
             frame.at(x, y) = static_cast<std::uint16_t>(std::lround(frame.metadata.blackLevel + value * (frame.metadata.whiteLevel - frame.metadata.blackLevel)));
         }
     }
@@ -183,11 +211,15 @@ int main(int argc, char** argv) {
             const std::uint32_t frames = uint_after(args, "--frames", 8);
             const std::uint32_t width = uint_after(args, "--width", 128);
             const std::uint32_t height = uint_after(args, "--height", 96);
+            const std::string exposureText = value_after(args, "--exposure-range");
+            const float exposureRange = exposureText.empty() ? 0.0f : std::stof(exposureText);
             fs::create_directories(destination);
             for (std::uint32_t i = 0; i < frames; ++i) {
-                write_rawpack(synthetic_frame(width, height, i, frames), (destination / ("frame_" + std::to_string(i) + ".rawpack")).string());
+                write_rawpack(synthetic_frame(width, height, i, frames, exposureRange), (destination / ("frame_" + std::to_string(i) + ".rawpack")).string());
             }
-            std::cout << "generated " << frames << " deterministic RAWPACK frames at " << destination.string() << "\n";
+            std::cout << "generated " << frames << " deterministic RAWPACK frames at " << destination.string();
+            if (exposureRange > 0.0f) std::cout << " spanning " << exposureRange << " stops of exposure";
+            std::cout << "\n";
             return 0;
         }
 

@@ -5,6 +5,6 @@
   <merge huberK="1.5" outlierRejection="0.35" edgeProtection="0.90" />
   <superResolution enabled="false" strength="0.0" regularization="0.20" />
   <denoise luma="0.0" chroma="0.0" textureProtection="1.0" />
-  <tone exposure="0.0" blackPoint="0.0" shadow="0.0" midtone="1.0" highlight="0.0" shoulder="0.0" localContrast="0.0" />
+  <tone localStrength="0.0" highlightRecovery="0.0" exposure="0.0" blackPoint="0.0" shadow="0.0" midtone="1.0" highlight="0.0" shoulder="0.0" localContrast="0.0" headroomStops="0.0" />
   <detail microcontrast="0.0" fineSharpen="0.0" threshold="0.08" haloProtection="1.0" />
 </gcamEmulationProfile>

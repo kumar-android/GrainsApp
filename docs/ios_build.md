@@ -66,6 +66,14 @@ On a physical RAW-capable iPhone:
    Documents directory. On a device without Bayer RAW, verify a readable error.
 6. Step the frame picker through its options (`4` to `32`) and confirm the result
    summary reports the resolution and how many frames actually merged.
+7. Step the frame picker's exposure bracket through `Off`, `±1.5 EV` and `±2.5 EV`
+   and capture a scene with a bright sky or a window. The bracket is applied with
+   `setExposureTargetBias` between frames, so the burst's frames are deliberately
+   metered differently: the merge has to align frames of different exposures and a
+   result that is ghosted or smeared means the exposure-matched alignment regressed.
+   The result should hold the highlight instead of rendering it flat white, and
+   `--diagnostics` on the exported burst should report a non-zero
+   `exposureRangeStops` and `recoveredHighlightFraction`.
 
 Two further invariants keep capture recoverable on real hardware:
 
@@ -91,10 +99,12 @@ process a generated burst with `config/gcam_natural.xml` and
 `config/gcam_high_detail.xml` before and after a change and compare the output PPM
 hashes. A 4032x3024 burst exercises the full-resolution path that a device uses.
 
-`BayerSampling` keeps every CFA phase by dropping whole 2x2 Bayer cells, so a reduced
-frame still demosaics. Capture no longer reduces the RAW it feeds the engine: doing so
-capped the merged result at half the sensor's linear resolution and removed the
-sub-pixel frame differences that alignment needs.
+`BayerSampling` reduces a frame by box-averaging the same-phase sensels across each
+`2 * scale` cell, so a reduced frame keeps every CFA phase and does not alias: picking
+one sensel per cell instead would fold the cell's own detail back into the result as
+noise, which is what the earlier point-sampling did. Capture no longer reduces the RAW it
+feeds the engine: doing so capped the merged result at half the sensor's linear resolution
+and removed the sub-pixel frame differences that alignment needs.
 
 If a device still closes the app, retain the Xcode exception/backtrace (or iOS
 JetsamEvent if it was killed for memory), the device/iOS version, and whether the
