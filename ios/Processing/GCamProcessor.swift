@@ -1,8 +1,18 @@
 import Foundation
 
 final class GCamProcessor {
-    private static let maxOnDeviceDimension = 2048
-    private static let maxEstimatedWorkingSet = UInt64(1_200_000_000)
+    // The on-device path runs the vector reference engine, so it bounds a burst by
+    // how many frames fit the memory budget rather than by resolution. Reducing
+    // every frame on the same grid while capturing removes the sub-pixel phase
+    // diversity that alignment and the merge depend on, which collapses the result
+    // back into a single decimated RAW frame.
+    private static let maximumWorkingSet = UInt64(1_200_000_000)
+    private static let minimumProcessedFrames = 2
+    // Peak bytes per working pixel per frame: the engine holds a 16-bit copy of the
+    // RAW (2) plus the normalized linear and luma planes (4 + 4). The merged planes
+    // and the RGB render add a frame-independent 20 bytes per working pixel.
+    private static let bytesPerWorkingPixelPerFrame = UInt64(10)
+    private static let fixedBytesPerWorkingPixel = UInt64(20)
     private let engine: OpaquePointer
 
     init() throws {
@@ -12,7 +22,7 @@ final class GCamProcessor {
 
     deinit { gcam_destroy_engine(engine) }
 
-    func process(frames: [CapturedRAWFrame], profilePath: String) throws -> (width: Int, height: Int, rgb: [Float], diagnostics: String) {
+    func process(frames: [CapturedRAWFrame], profilePath: String) throws -> (width: Int, height: Int, rgb: [Float], diagnostics: String, summary: String) {
         guard !frames.isEmpty else {
             throw NSError(domain: "GCamCamera", code: 27, userInfo: [NSLocalizedDescriptionKey: "Cannot process an empty RAW burst"])
         }
@@ -42,8 +52,12 @@ final class GCamProcessor {
         var diagnostics = [CChar](repeating: 0, count: 32 * 1024)
         _ = gcam_get_diagnostics_json(engine, &diagnostics, UInt32(diagnostics.count))
         let diagnosticText = String(cString: diagnostics)
-        let previewNote = processingScale > 1 ? "\n\nOn-device preview scale: 1/\(processingScale). The exported RAW burst remains full resolution." : ""
-        return (Int(result.width), Int(result.height), rgb, diagnosticText + previewNote)
+        let mergeNote = workingFrames.count < frames.count
+            ? "merged \(workingFrames.count) of \(frames.count) frames"
+            : "merged \(frames.count) frames"
+        let scaleNote = processingScale > 1 ? " · preview scale 1/\(processingScale)" : ""
+        let summary = "\(result.width)x\(result.height) · \(mergeNote)\(scaleNote)"
+        return (Int(result.width), Int(result.height), rgb, diagnosticText, summary)
     }
 
     private static func prepareForOnDeviceProcessing(_ frames: [CapturedRAWFrame]) throws -> (frames: [CapturedRAWFrame], scale: Int) {
@@ -62,41 +76,65 @@ final class GCamProcessor {
                 throw NSError(domain: "GCamCamera", code: 28, userInfo: [NSLocalizedDescriptionKey: "RAW burst dimensions, pixel storage, or Bayer patterns are invalid"])
             }
         }
-        let sampling = try BayerSampling(width: Int(first.metadata.width), height: Int(first.metadata.height), maxDimension: maxOnDeviceDimension)
-        let scale = sampling.scale
+        let width = Int(first.metadata.width)
+        let height = Int(first.metadata.height)
+        // Every captured frame stays resident while the engine runs, so the source
+        // RAWs are counted once no matter how many frames the engine receives.
+        let sourceBytes = UInt64(width) * UInt64(height) * UInt64(frames.count) * UInt64(MemoryLayout<UInt16>.size)
+        let deviceBudget = min(Self.maximumWorkingSet, ProcessInfo.processInfo.physicalMemory / 4)
+        guard deviceBudget > sourceBytes else {
+            throw NSError(domain: "GCamCamera", code: 29, userInfo: [NSLocalizedDescriptionKey: "This burst is too large for safe on-device processing. Export the full RAW burst and process it with the Windows RAWPACK laboratory."])
+        }
+        let processingBudget = deviceBudget - sourceBytes
 
-        let originalPixels = UInt64(first.metadata.width) * UInt64(first.metadata.height)
-        let sourceBytes = originalPixels * UInt64(frames.count) * UInt64(MemoryLayout<UInt16>.size)
-        let workingWidth = sampling.width
-        let workingHeight = sampling.height
-        let workingPixels = UInt64(workingWidth) * UInt64(workingHeight)
-        // Account for Swift's source RAW, the C++ RAW copy, the two normalized
-        // planes, the merged plane, and the RGB/intermediate render buffers.
-        let estimatedBytes = sourceBytes + workingPixels * UInt64(frames.count) * 20 + workingPixels * 16
-        let deviceBudget = min(Self.maxEstimatedWorkingSet, ProcessInfo.processInfo.physicalMemory / 2)
-        guard estimatedBytes <= deviceBudget else {
+        // Full resolution is tried first and frames are dropped before resolution:
+        // a shorter full-resolution burst keeps more real detail than a longer one
+        // that was reduced on the sampling grid shared by every frame.
+        let requiredFrames = min(Self.minimumProcessedFrames, frames.count)
+        var scale = 1
+        var selection: (sampling: BayerSampling, frameLimit: Int)?
+        while selection == nil {
+            let sampling = try BayerSampling(width: width, height: height, scale: scale)
+            let workingPixels = UInt64(sampling.width) * UInt64(sampling.height)
+            let fixedBytes = workingPixels * Self.fixedBytesPerWorkingPixel
+            let available = processingBudget > fixedBytes ? processingBudget - fixedBytes : 0
+            let bytesPerFrame = workingPixels * Self.bytesPerWorkingPixelPerFrame
+            let affordableFrames = bytesPerFrame == 0 ? 0 : Int(available / bytesPerFrame)
+            let frameLimit = min(frames.count, affordableFrames)
+            if frameLimit >= requiredFrames {
+                selection = (sampling, frameLimit)
+                break
+            }
+            // Stop once a larger factor cannot remove any more sensels.
+            let next = try BayerSampling(width: width, height: height, scale: scale + 1)
+            if next.width == sampling.width && next.height == sampling.height { break }
+            scale += 1
+        }
+        guard let selection else {
             throw NSError(domain: "GCamCamera", code: 29, userInfo: [NSLocalizedDescriptionKey: "This burst is too large for safe on-device processing. Export the full RAW burst and process it with the Windows RAWPACK laboratory."])
         }
 
-        guard sampling.width != Int(first.metadata.width) || sampling.height != Int(first.metadata.height) else { return (frames, 1) }
-        let reduced = frames.map { frame -> CapturedRAWFrame in
-            let width = Int(frame.metadata.width)
-            let outputWidth = sampling.width
-            let outputHeight = sampling.height
-            var pixels = [UInt16](repeating: 0, count: outputWidth * outputHeight)
-            for y in 0..<outputHeight {
-                let sourceY = sampling.sourceCoordinate(y)
-                for x in 0..<outputWidth {
-                    let sourceX = sampling.sourceCoordinate(x)
-                    pixels[y * outputWidth + x] = frame.pixels[sourceY * width + sourceX]
-                }
+        let workingFrames = selection.sampling.scale == 1
+            ? frames
+            : frames.map { Self.reducedFrame($0, using: selection.sampling) }
+        return (Array(workingFrames.prefix(selection.frameLimit)), selection.sampling.scale)
+    }
+
+    private static func reducedFrame(_ frame: CapturedRAWFrame, using sampling: BayerSampling) -> CapturedRAWFrame {
+        let sourceWidth = Int(frame.metadata.width)
+        let outputWidth = sampling.width
+        let outputHeight = sampling.height
+        var pixels = [UInt16](repeating: 0, count: outputWidth * outputHeight)
+        for y in 0..<outputHeight {
+            let sourceY = sampling.sourceCoordinate(y)
+            for x in 0..<outputWidth {
+                pixels[y * outputWidth + x] = frame.pixels[sourceY * sourceWidth + sampling.sourceCoordinate(x)]
             }
-            var metadata = frame.metadata
-            metadata.width = UInt32(outputWidth)
-            metadata.height = UInt32(outputHeight)
-            metadata.rowStrideBytes = UInt32(outputWidth * MemoryLayout<UInt16>.size)
-            return CapturedRAWFrame(metadata: metadata, pixels: pixels)
         }
-        return (reduced, scale)
+        var metadata = frame.metadata
+        metadata.width = UInt32(outputWidth)
+        metadata.height = UInt32(outputHeight)
+        metadata.rowStrideBytes = UInt32(outputWidth * MemoryLayout<UInt16>.size)
+        return CapturedRAWFrame(metadata: metadata, pixels: pixels)
     }
 }

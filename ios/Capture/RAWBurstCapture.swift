@@ -341,13 +341,25 @@ struct BayerSampling {
         if let maxDimension, max(width, height) > maxDimension {
             let longestCellCount = max(width / 2, height / 2)
             let targetCellCount = maxDimension / 2
-            scale = 1 + (longestCellCount - 1) / targetCellCount
-            self.width = 2 * (1 + (width / 2 - 1) / scale)
-            self.height = 2 * (1 + (height / 2 - 1) / scale)
+            try self.init(width: width, height: height, scale: 1 + (longestCellCount - 1) / targetCellCount)
         } else {
-            scale = 1
+            try self.init(width: width, height: height, scale: 1)
+        }
+    }
+
+    // `scale` is the linear reduction factor. Only whole 2x2 Bayer cells are
+    // dropped, so a reduced frame keeps every CFA phase and still demosaics.
+    init(width: Int, height: Int, scale: Int) throws {
+        guard width >= 2, height >= 2, scale >= 1 else {
+            throw NSError(domain: "GCamCamera", code: 9, userInfo: [NSLocalizedDescriptionKey: "RAW sampling dimensions are invalid"])
+        }
+        self.scale = scale
+        if scale == 1 {
             self.width = width
             self.height = height
+        } else {
+            self.width = 2 * (1 + (width / 2 - 1) / scale)
+            self.height = 2 * (1 + (height / 2 - 1) / scale)
         }
     }
 

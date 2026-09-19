@@ -8,6 +8,7 @@ final class CameraController: ObservableObject {
     @Published private(set) var lastError = ""
     @Published private(set) var diagnostics = ""
     @Published private(set) var resultJPEG: Data?
+    @Published private(set) var resultSummary = ""
     @Published private(set) var isReady = false
 
     private let capture = RAWBurstCapture()
@@ -64,11 +65,15 @@ final class CameraController: ObservableObject {
         state = .arming
         lastError = ""
         diagnostics = ""
+        resultSummary = ""
         operationTask = Task { [weak self] in
             guard let self else { return }
             do {
                 state = .capturing
-                let frames = try await capture.captureBurst(count: 8, maxDimension: 2048)
+                // Capture keeps the full sensor resolution. Reducing the RAW here
+                // would cap the merged result at half the linear resolution and
+                // remove the sub-pixel frame differences the engine aligns on.
+                let frames = try await capture.captureBurst(count: 8)
                 try Task.checkCancellation()
                 state = .collecting
                 guard let profilePath = Bundle.main.path(forResource: "gcam_natural", ofType: "xml") else {
@@ -81,6 +86,7 @@ final class CameraController: ObservableObject {
                 }.value
                 try Task.checkCancellation()
                 diagnostics = processed.diagnostics
+                resultSummary = processed.summary
                 state = .rendering
                 let jpeg = try await Task.detached(priority: .userInitiated) {
                     try ProcessedImageEncoder.jpeg(width: processed.width, height: processed.height, linearRGB: processed.rgb)

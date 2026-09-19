@@ -115,10 +115,17 @@ struct CameraView: View {
             }
             .foregroundStyle(.white)
 
-            Text("Capture preview  •  export full-resolution RAW for Windows")
-                .font(.caption2)
-                .foregroundStyle(.white.opacity(0.72))
-                .multilineTextAlignment(.center)
+            VStack(spacing: 3) {
+                if !controller.resultSummary.isEmpty {
+                    Label(controller.resultSummary, systemImage: "checkmark.circle")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.white)
+                }
+                Text("Capture preview  •  export full-resolution RAW for Windows")
+                    .font(.caption2)
+                    .foregroundStyle(.white.opacity(0.72))
+            }
+            .multilineTextAlignment(.center)
         }
     }
 

@@ -75,12 +75,20 @@ Two further invariants keep capture recoverable on real hardware:
    request without a delegate callback (lock, call, thermal shutdown), the burst
    fails with an error instead of leaving the shutter stuck in "Capturing".
 
-The on-device preview path also depends on the portable engine staying affordable
-for a 2048-class 8-frame burst, so alignment gathers the reference luma plane once
-and the merge and normalizer reuse their scratch buffers. Keep that equivalence test
-running when the core changes: process a generated burst at 2016x1512 with
-`config/gcam_natural.xml` and `config/gcam_high_detail.xml` before and after a change
-and compare the output PPM hashes.
+The on-device preview path also depends on the portable engine staying affordable at
+full sensor resolution, so alignment gathers the reference luma plane once and the
+merge and normalizer reuse their scratch buffers. A natural capture keeps every frame
+at the sensor resolution and drops trailing frames when the working-set budget cannot
+hold them all; a result that reports fewer merged frames than it captured is expected
+on smaller devices. Keep the core equivalence test running when the engine changes:
+process a generated burst with `config/gcam_natural.xml` and
+`config/gcam_high_detail.xml` before and after a change and compare the output PPM
+hashes. A 4032x3024 burst exercises the full-resolution path that a device uses.
+
+`BayerSampling` keeps every CFA phase by dropping whole 2x2 Bayer cells, so a reduced
+frame still demosaics. Capture no longer reduces the RAW it feeds the engine: doing so
+capped the merged result at half the sensor's linear resolution and removed the
+sub-pixel frame differences that alignment needs.
 
 If a device still closes the app, retain the Xcode exception/backtrace (or iOS
 JetsamEvent if it was killed for memory), the device/iOS version, and whether the
