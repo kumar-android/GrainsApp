@@ -127,10 +127,10 @@ enum RAWBufferReader {
         let exposure = ((metadata["{Exif}"] as? [String: Any])?["ExposureTime"] as? NSNumber)?.floatValue ?? 0
         let aperture = ((metadata["{Exif}"] as? [String: Any])?["FNumber"] as? NSNumber)?.floatValue ?? 0
         let bayer = bayerCode(from: dng["CFAPattern"] as? [NSNumber])
-        let wb = (dng["AsShotNeutral"] as? [NSNumber]).map { values in
+        let wb: (Float, Float, Float) = (dng["AsShotNeutral"] as? [NSNumber]).map { values in
             let neutral = values.map(\.floatValue)
             return (1 / max(neutral[safe: 0] ?? 1, 0.01), 1 / max(neutral[safe: 1] ?? 1, 0.01), 1 / max(neutral[safe: 2] ?? 1, 0.01))
-        } ?? (1, 1, 1)
+        } ?? (1.0, 1.0, 1.0)
         let whiteLevelEstimate = max(2, Int(white) + 1)
         let bitDepthEstimate = Int(ceil(log2(Double(whiteLevelEstimate))))
         let detectedBitDepth = UInt16(max(1, min(16, bitDepthEstimate)))
