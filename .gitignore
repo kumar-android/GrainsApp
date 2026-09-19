@@ -1,0 +1,31 @@
+# Portable builds and generated outputs
+/build/
+/benchmark/out/
+/work/
+/outputs/
+*.ppm
+*.pfm
+*.rawpack
+*.gcamrawburst
+processing.json
+
+# Large camera data and private references
+/assets/reference/*.jpg
+/assets/reference/*.jpeg
+/assets/reference/*.png
+/assets/fixtures/*.raw
+/assets/fixtures/*.dng
+/assets/fixtures/*.rawpack
+
+# Xcode products
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.hmap
+
+# Python and editor files
+__pycache__/
+*.py[cod]
+.DS_Store
+.idea/
+.vscode/

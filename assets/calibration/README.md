@@ -1,0 +1,1 @@
+Store measured sensor calibration material here: dark-frame summaries, flat-field samples, ColorChecker observations, and lens-shading coefficients. Do not commit private camera metadata or giant captures.

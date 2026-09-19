@@ -1,0 +1,1 @@
+Place paired reference scenes here, such as an exported GCam/AGC JPEG and a matching iPhone RAWPACK burst. Large images are intentionally ignored by Git; keep only small reproducible fixtures in version control.

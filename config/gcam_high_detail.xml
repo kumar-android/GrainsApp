@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gcamEmulationProfile name="High Detail" profileVersion="1" sensorTarget="runtime Bayer sensor" engineMinimumVersion="0.1.0">
+  <sensor wbR="2.0" wbG="1.0" wbB="1.55" cameraMatrix="1.55,-0.32,-0.23,-0.12,1.22,-0.10,-0.08,-0.25,1.33" />
+  <burst targetFrames="10" maxFrames="12" motionThreshold="0.050" alignmentThreshold="0.11" />
+  <merge huberK="1.45" outlierRejection="0.32" edgeProtection="0.88" />
+  <superResolution enabled="true" strength="0.34" regularization="0.07" />
+  <denoise luma="0.010" chroma="0.045" textureProtection="0.96" />
+  <tone exposure="0.0" blackPoint="0.0" shadow="0.07" midtone="1.03" highlight="0.68" shoulder="0.20" localContrast="0.045" />
+  <detail microcontrast="0.075" fineSharpen="0.14" threshold="0.030" haloProtection="0.88" />
+</gcamEmulationProfile>

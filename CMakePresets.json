@@ -1,0 +1,22 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "windows-ninja",
+      "displayName": "Windows portable CPU reference",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/win",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "GCAM_BUILD_TESTS": "ON",
+        "GCAM_BUILD_TOOLS": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "windows-ninja-release", "configurePreset": "windows-ninja" }
+  ],
+  "testPresets": [
+    { "name": "windows-ninja-tests", "configurePreset": "windows-ninja", "output": { "outputOnFailure": true } }
+  ]
+}
