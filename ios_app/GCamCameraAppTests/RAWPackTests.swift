@@ -59,9 +59,14 @@ final class RAWPackTests: XCTestCase {
         let preview = try RAWBufferReader.read(pixelBuffer: buffer, metadata: [:], frameIndex: 3, maxDimension: 4)
         XCTAssertEqual(preview.metadata.width, 4)
         XCTAssertEqual(preview.metadata.height, 4)
-        // Keep all four sensels from each selected cell, not only even/even.
-        XCTAssertEqual(preview.pixels, [0, 1, 4, 5, 100, 101, 104, 105,
-                                       400, 401, 404, 405, 500, 501, 504, 505])
+        // Each reduced sample averages the same-phase sensels of the 4x4 block it replaces, so
+        // every CFA phase survives and the detail the smaller grid cannot hold is filtered out
+        // instead of folding back in. Output (0, 0) is the mean of (0,0), (2,0), (0,2), (2,2):
+        // (0 + 2 + 200 + 202) / 4 = 101. Picking one sensel per block would give 0 and alias.
+        // The buffer's padded columns hold UInt16.max, and a sample that read one would be
+        // pulled to a nonsense value, so these numbers also pin the row-stride handling down.
+        XCTAssertEqual(preview.pixels, [101, 102, 105, 106, 201, 202, 205, 206,
+                                        501, 502, 505, 506, 601, 602, 605, 606])
     }
 
     func testRAWReaderInfersCFAFromAllSupportedPixelFormats() throws {
